@@ -52,7 +52,6 @@ Categories are only titles, chosen from a fixed list. A few paths and lines alwa
 
 ## Things to know
 
-*   An approval through the mod is a normal GitHub approval. It does not say that only HOT lines were read.
 *   Model calls stay out of Claude Code's cost totals. The review header shows the tokens used.
 *   Above 5,000 changed lines still to classify, the review asks before it starts. Below that, classification starts as soon as the review opens. It can use the whole budget of 3,000,000 input tokens. Past it, lines stay visible until you press `Continue classification`.
 *   No prompt can guarantee that a model ignores hostile text in the code. A hostile hunk can still win a low score or a misleading summary.
