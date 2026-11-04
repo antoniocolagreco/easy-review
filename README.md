@@ -15,7 +15,8 @@ A Claude Code mod that shows only the high-risk lines of a diff, so a person rea
 ## Load it
 
 ```sh
-CLAUDE_CODE_NO_FLICKER=1 claude --plugin-dir ~/Projects/easy-review
+git clone https://github.com/antoniocolagreco/easy-review.git
+CLAUDE_CODE_NO_FLICKER=1 claude --plugin-dir ./easy-review
 ```
 
 ## How to use it
