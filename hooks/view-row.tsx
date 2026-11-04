@@ -2,12 +2,17 @@ import { atom, read, update } from 'claude-code'
 import type { Elements as AllElements, EngineInterface, RenderElement } from 'claude-code'
 
 import type { Block, Composer, DiffLine, Draft, HeadingBlock, ReviewAction, Thread } from '../types'
+import { TOKEN_BUDGET } from './classifier-queue'
 import {
   addContext,
   canApprove,
+  cancelClassification,
+  confirmClassification,
   continueClassification,
   currentSession,
   drawnView,
+  editDraft,
+  postDraft,
   promote,
   redraw,
   resolveThread,
@@ -17,6 +22,7 @@ import {
   submitVerdict,
 } from './review'
 import type { Notes, Session } from './review'
+import { deliver, deliverOutcome, notifyLong } from './view-band'
 
 const rowId = atom({ plugin: 'easy-review', key: 'rowId' } as const, null)
 const revision = atom({ plugin: 'easy-review', key: 'revision' } as const, 0)
@@ -25,7 +31,7 @@ const selected = atom({ plugin: 'easy-review', key: 'selected' } as const, null)
 const composer = atom({ plugin: 'easy-review', key: 'composer' } as const, null)
 const expanded = atom({ plugin: 'easy-review', key: 'expanded' } as const, [])
 const pending = atom({ plugin: 'easy-review', key: 'pending' } as const, null)
-const outcome = atom({ plugin: 'easy-review', key: 'outcome' } as const, null)
+const delivery = atom({ plugin: 'easy-review', key: 'delivery' } as const, null)
 
 export type Elements = AllElements['terminal'] | AllElements['desktop']
 
@@ -54,14 +60,14 @@ const splitAfterNotes = (lines: readonly DiffLine[], notes: ReadonlyMap<string, 
 const confirmText = (current: Session, action: ReviewAction, hiddenLines: number, read: number, total: number): string => {
   const commit = current.commit.slice(0, 7)
   const number = current.pr?.number ?? 0
-  const moved = current.stored.drafts.filter(draft => draft.hasMoved).length
-  const movedNote = moved > 0 ? ` ${moved} comments on moved lines stay as drafts.` : ''
+  const unposted = current.stored.drafts.length
+  const unpostedNote = unposted > 0 ? ` ${commentCount(unposted)} not posted will stay here.` : ''
 
   if (action === 'Reject') {
-    return `Close PR #${number} without merging it?${movedNote}`
+    return `Close PR #${number} without merging it?${unpostedNote}`
   }
 
-  return `${action} on commit ${commit}? You read ${read} of ${total} sections, and ${formatCount(hiddenLines)} changed lines are hidden.${movedNote}`
+  return `${action} on commit ${commit}? You read ${read} of ${total} sections, and ${formatCount(hiddenLines)} changed lines are hidden.${unpostedNote}`
 }
 
 export async function renderRow($: EngineInterface, elements: Elements, rowKey: string, screenRows: number): Promise<RenderElement> {
@@ -87,10 +93,35 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
     return <Text color="red">easy-review stopped: {current.message}</Text>
   }
 
+  if (current.status === 'confirm') {
+    return (
+      <Box flexDirection="column" borderStyle="round" paddingX={1}>
+        <Text weight="semibold">
+          {current.pr !== null
+            ? `PR #${current.pr.number} ${current.pr.title}`
+            : current.baseName === null
+              ? `Uncommitted changes on ${current.branch}`
+              : `${current.branch} against ${current.baseName}`}
+        </Text>
+        <Text>
+          {formatCount(current.linesToClassify)} changed lines need classifying. This can use up to{' '}
+          {formatCount(TOKEN_BUDGET)} input tokens.
+        </Text>
+        <Box>
+          <Button key="classify-confirm" variant="primary" onPress={() => confirmClassification($)}>
+            Classify
+          </Button>
+          <Button key="classify-cancel" onPress={() => cancelClassification($)}>
+            Cancel
+          </Button>
+        </Box>
+      </Box>
+    )
+  }
+
   const picked = await read($, selected)
   const open = await read($, expanded)
   const action = await read($, pending)
-  const result = await read($, outcome)
   const pageIndex = await read($, pageAtom)
   const { view, pages, notes } = drawnView(current, open)
   const { counts } = view
@@ -110,35 +141,73 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
     update($, expanded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key]))
 
   const openComposer = async (target: Composer) => {
+    await update($, delivery, now => (now?.kind === 'kept' ? null : now))
     await update($, selected, () => null)
     await update($, composer, () => target)
   }
 
-  const say = (message: string | null) => update($, outcome, () => message)
-
   const drawDraft = (draft: Draft, index: number) => (
     <Box key={`draft-${index}`} justifyContent="space-between" borderStyle="round" paddingX={1} marginLeft={8}>
       <Text>
-        {draft.isSent ? 'Sent' : draft.hasMoved ? `Moved (${draft.path}:${draft.line})` : 'Draft'}: {draft.text}
+        {draft.isSent
+          ? 'Sent'
+          : draft.hasMoved
+            ? `Moved (${draft.path}:${draft.line})`
+            : !isPr
+              ? 'Draft'
+              : current.isPosting
+                ? 'Posting'
+                : 'Not posted'}
+        : {draft.text}
       </Text>
-      {!draft.isSent && (
-        <Button key={`edit-draft-${index}`} plain dimColor onPress={() => openComposer({ kind: 'draft', index })}>
-          Edit
-        </Button>
-      )}
+      <Box>
+        {isPr && !draft.hasMoved && !current.isPosting && (
+          <Button
+            key={`post-draft-${index}`}
+            plain
+            dimColor
+            onPress={() =>
+              deliver(
+                $,
+                {
+                  sending: `Posting your comment on ${draft.path}:${draft.line}...`,
+                  done: `Comment posted on ${draft.path}:${draft.line}.`,
+                },
+                () => postDraft($, index),
+              )
+            }
+          >
+            Post{' '}
+          </Button>
+        )}
+        {!draft.isSent && !current.isPosting && (
+          <Box>
+            <Button key={`edit-draft-${index}`} plain dimColor onPress={() => openComposer({ kind: 'draft', index })}>
+              Edit{' '}
+            </Button>
+            <Button key={`delete-draft-${index}`} plain dimColor onPress={() => editDraft($, index, '')}>
+              Delete
+            </Button>
+          </Box>
+        )}
+      </Box>
     </Box>
   )
 
   const drawThread = (thread: Thread, index: number) =>
     thread.isResolved ? (
       <Box key={`thread-${index}`} marginLeft={8}>
-        <Text dimColor>Resolved ({thread.comments.length} comments) </Text>
+        <Text dimColor>Resolved ({commentCount(thread.comments.length)}) </Text>
         {thread.canUnresolve && (
           <Button
             key={`unresolve-thread-${index}`}
             plain
             dimColor
-            onPress={async () => say(await resolveThread($, index, false))}
+            onPress={() =>
+              deliver($, { sending: 'Reopening the discussion...', done: 'Discussion reopened.' }, () =>
+                resolveThread($, index, false),
+              )
+            }
           >
             Unresolve
           </Button>
@@ -152,16 +221,28 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
             <Text>
               {comment.author}: {comment.body}
             </Text>
-            {(comment.canUpdate || comment.canDelete) && (
-              <Button
-                key={`edit-comment-${index}-${commentIndex}`}
-                plain
-                dimColor
-                onPress={() => openComposer({ kind: 'edit', thread: index, comment: commentIndex })}
-              >
-                Edit
-              </Button>
-            )}
+            <Box>
+              {comment.canUpdate && (
+                <Button
+                  key={`edit-comment-${index}-${commentIndex}`}
+                  plain
+                  dimColor
+                  onPress={() => openComposer({ kind: 'edit', thread: index, comment: commentIndex })}
+                >
+                  Edit{' '}
+                </Button>
+              )}
+              {comment.canDelete && (
+                <Button
+                  key={`delete-comment-${index}-${commentIndex}`}
+                  plain
+                  dimColor
+                  onPress={() => openComposer({ kind: 'delete', thread: index, comment: commentIndex })}
+                >
+                  Delete
+                </Button>
+              )}
+            </Box>
           </Box>
         ))}
         <Box>
@@ -171,7 +252,14 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
             </Button>
           )}
           {thread.canResolve && (
-            <Button key={`resolve-thread-${index}`} onPress={async () => say(await resolveThread($, index, true))}>
+            <Button
+              key={`resolve-thread-${index}`}
+              onPress={() =>
+                deliver($, { sending: 'Resolving the discussion...', done: 'Discussion resolved.' }, () =>
+                  resolveThread($, index, true),
+                )
+              }
+            >
               Resolve
             </Button>
           )}
@@ -258,7 +346,7 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
                 key={`more-${block.sectionId}`}
                 plain
                 dimColor
-                onPress={async () => say(await addContext($, block.sectionId, block.path, anchor))}
+                onPress={async () => notifyLong($, await addContext($, block.sectionId, block.path, anchor))}
               >
                 More context
               </Button>
@@ -325,8 +413,7 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
 
   const sendVerdict = async (kind: ReviewAction) => {
     await update($, pending, () => null)
-    await say('Sending...')
-    await say(await submitVerdict($, kind))
+    await deliverOutcome($, kind === 'Reject' ? 'Closing the PR...' : `Sending ${kind}...`, () => submitVerdict($, kind))
     await redraw($)
   }
 
@@ -427,7 +514,11 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
           <Box flexDirection="column">
             <Text dimColor>{commentCount(unsent)} to send.</Text>
             {unsent > 0 ? (
-              <Button key="send-to-claude" variant="primary" onPress={async () => say(await sendToClaude($))}>
+              <Button
+                key="send-to-claude"
+                variant="primary"
+                onPress={() => deliverOutcome($, 'Sending your comments to Claude...', () => sendToClaude($))}
+              >
                 Send to Claude
               </Button>
             ) : (
@@ -439,14 +530,14 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
         ) : (
           <Box flexDirection="column">
             <Text dimColor>
-              {commentCount(unsent)} in this review.{current.stored.body === '' ? '' : ` Summary: ${current.stored.body}`}
+              {current.stored.body === '' ? 'Comment and Request changes need a summary.' : `Summary: ${current.stored.body}`}
             </Text>
             {action === null ? (
               <Box>
                 <Button key="review-body" onPress={() => openComposer({ kind: 'body' })}>
                   Write summary
                 </Button>
-                {(unsent > 0 || current.stored.body !== '') && (
+                {current.stored.body !== '' && (
                   <Button key="review-comment" onPress={() => update($, pending, () => 'Comment')}>
                     Comment
                   </Button>
@@ -458,7 +549,7 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
                 ) : (
                   <Text dimColor> Approve waits for classification. </Text>
                 )}
-                {(unsent > 0 || current.stored.body !== '') && (
+                {current.stored.body !== '' && (
                   <Button key="review-changes" onPress={() => update($, pending, () => 'Request changes')}>
                     Request changes
                   </Button>
@@ -482,7 +573,6 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
             )}
           </Box>
         )}
-        {result !== null && <Text color="green">{result}</Text>}
       </Box>
     </Box>
   )

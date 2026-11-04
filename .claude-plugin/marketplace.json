@@ -1,0 +1,5 @@
+{
+  "name": "easy-review",
+  "owner": { "name": "Antonio Colagreco" },
+  "plugins": [{ "name": "easy-review", "source": "./" }]
+}

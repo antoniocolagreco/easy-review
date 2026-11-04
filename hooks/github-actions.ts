@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Draft, PrRef, ThreadComment } from '../types'
+import type { Draft, PrRef, Thread, ThreadComment } from '../types'
 import { sanitizeText } from './sanitize'
 
 export type ActionResult<T> = { isDone: true; data: T } | { isDone: false; error: string }
@@ -58,28 +58,27 @@ async function graphql($: EngineInterface, query: string, variables: Record<stri
 
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES'
 
-export const DEFAULT_BODY = 'See the line comments.'
-
 export function submitReview(
   $: EngineInterface,
   ref: PrRef,
   commit: string,
   event: ReviewEvent,
   body: string,
-  drafts: readonly Draft[],
 ): Promise<ActionResult<unknown>> {
-  const text = body === '' && event !== 'APPROVE' ? DEFAULT_BODY : body
-
   return callGh($, ['-X', 'POST', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews`], {
     commit_id: commit,
     event,
-    body: text,
-    comments: drafts.map(draft => ({
-      path: draft.path,
-      line: draft.line,
-      side: draft.side,
-      body: draft.text,
-    })),
+    body,
+  })
+}
+
+export function postLineComment($: EngineInterface, ref: PrRef, commit: string, draft: Draft): Promise<ActionResult<unknown>> {
+  return callGh($, ['-X', 'POST', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`], {
+    commit_id: commit,
+    path: draft.path,
+    line: draft.line,
+    side: draft.side,
+    body: draft.text,
   })
 }
 
@@ -145,14 +144,31 @@ export async function deleteComment($: EngineInterface, commentId: string): Prom
   return result.isDone ? { isDone: true, data: null } : result
 }
 
-export async function setThreadResolved($: EngineInterface, threadId: string, isResolved: boolean): Promise<ActionResult<null>> {
+const THREAD_FIELDS = 'isResolved viewerCanReply viewerCanResolve viewerCanUnresolve'
+
+export type ThreadState = Pick<Thread, 'isResolved' | 'canReply' | 'canResolve' | 'canUnresolve'>
+
+export async function setThreadResolved($: EngineInterface, threadId: string, isResolved: boolean): Promise<ActionResult<ThreadState>> {
+  const field = isResolved ? 'resolveReviewThread' : 'unresolveReviewThread'
   const result = await graphql(
     $,
-    isResolved
-      ? `mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { clientMutationId } }`
-      : `mutation($id: ID!) { unresolveReviewThread(input: { threadId: $id }) { clientMutationId } }`,
+    `mutation($id: ID!) { ${field}(input: { threadId: $id }) { thread { ${THREAD_FIELDS} } } }`,
     { id: threadId },
   )
 
-  return result.isDone ? { isDone: true, data: null } : result
+  if (!result.isDone) {
+    return result
+  }
+
+  const thread = asRecord(asRecord(result.data[field])['thread'])
+
+  return {
+    isDone: true,
+    data: {
+      isResolved: thread['isResolved'] === true,
+      canReply: thread['viewerCanReply'] === true,
+      canResolve: thread['viewerCanResolve'] === true,
+      canUnresolve: thread['viewerCanUnresolve'] === true,
+    },
+  }
 }

@@ -12,6 +12,7 @@ export const WORKERS = 4
 export const MAX_TOKENS = 8000
 export const TIMEOUT_MS = 120000
 export const TOKEN_BUDGET = 3000000
+export const CONFIRM_LINES = 5000
 
 export type Queue = {
   pieces: Piece[]

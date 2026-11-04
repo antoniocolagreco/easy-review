@@ -220,9 +220,12 @@ export type Composer =
   | { kind: 'draft'; index: number }
   | { kind: 'reply'; thread: number }
   | { kind: 'edit'; thread: number; comment: number }
+  | { kind: 'delete'; thread: number; comment: number }
   | { kind: 'body' }
 
 export type ReviewAction = 'Comment' | 'Approve' | 'Request changes' | 'Reject' | 'Send to Claude'
+
+export type Delivery = { kind: 'sending'; label: string } | { kind: 'kept'; text: string }
 
 export type DiffClientProps = {
   lines: DiffLine[]
@@ -240,7 +243,7 @@ declare module 'claude-code' {
       composer: Composer | null
       expanded: string[]
       pending: ReviewAction | null
-      outcome: string | null
+      delivery: Delivery | null
     }
   }
 }

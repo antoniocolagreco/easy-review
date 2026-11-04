@@ -6,7 +6,7 @@ A Claude Code mod that shows only the high-risk lines of a diff, so a person rea
 
 *   `/easy-review` reviews only uncommitted changes, including new files. Comments go to Claude, who corrects the code. Nothing reaches GitHub.
 *   `/easy-review <branch>` reviews the current branch from where it left the branch you name, for example `/easy-review develop`, including uncommitted changes and new files. Comments go to Claude here too. Comments go to Claude, who corrects the code. Nothing reaches GitHub.
-*   `/easy-review https://github.com/<owner>/<repo>/pull/<number>` reviews a pull request on GitHub. You can comment on a line, reply, edit your comments, resolve discussions, approve, request changes or reject. Reject closes the PR without merging.
+*   `/easy-review https://github.com/<owner>/<repo>/pull/<number>` reviews a pull request on GitHub. You can comment on a line, reply, edit or delete your comments, resolve discussions, approve, request changes or reject. A line comment reaches GitHub as soon as you press Enter. Comment and Request changes need a summary. Reject closes the PR without merging.
 
 ## Needs
 
@@ -14,12 +14,15 @@ A Claude Code mod that shows only the high-risk lines of a diff, so a person rea
 *   A mouse: clicks are the only way to comment and to press the buttons. In tmux, also add `set -g mouse on` to `~/.tmux.conf`. This has not been tried with a physical mouse.
 *   `git`, and `gh` logged in for PR review. The review shows which `gh` account it uses.
 
-## Load it
+## Install
 
-```sh
-git clone https://github.com/antoniocolagreco/easy-review.git
-claude --plugin-dir ./easy-review
+At the prompt of a Claude Code session in the terminal:
+
+```text
+/plugin install easy-review --marketplace antoniocolagreco/easy-review
 ```
+
+Answer `y` to add the marketplace, then choose a scope.
 
 ## How to use it
 
@@ -44,10 +47,19 @@ Categories are only titles, chosen from a fixed list. A few paths and lines alwa
 
 *   An approval through the mod is a normal GitHub approval. It does not say that only HOT lines were read.
 *   Model calls stay out of Claude Code's cost totals. The review header shows the tokens used.
-*   Classification starts as soon as the review opens, with no confirmation. On a very large diff it can use the whole budget of 3,000,000 input tokens. Past it, lines stay visible until you press `Continue classification`.
+*   Above 5,000 changed lines still to classify, the review asks before it starts. Below that, classification starts as soon as the review opens. It can use the whole budget of 3,000,000 input tokens. Past it, lines stay visible until you press `Continue classification`.
 *   No prompt can guarantee that a model ignores hostile text in the code. A hostile hunk can still win a low score or a misleading summary.
 
 ## Development
+
+Run the mod from a clone:
+
+```sh
+git clone https://github.com/antoniocolagreco/easy-review.git
+claude --plugin-dir ./easy-review
+```
+
+Check it from inside the clone:
 
 ```sh
 tsc -p .
@@ -56,3 +68,7 @@ claude plugin validate .
 ```
 
 The design is in `docs/designs/easy-review.md`.
+
+## License
+
+MIT. See `LICENSE`.

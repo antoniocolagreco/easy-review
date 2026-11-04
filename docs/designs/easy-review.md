@@ -73,19 +73,19 @@ The proposed solution computes a risk score for each snippet of changed code and
 
 *   **Given**: A PR is open on GitHub, the strongest model has reported no problems, and `gh` is logged in.
 *   **When**: The reviewer runs `/easy-review <PR URL>`, reads the HOT sections and presses Approve.
-*   **Then**: The review opens at once and shows classification progress. A header states how much is hidden. Before submitting, a confirmation names the commit and the hidden line count. GitHub records the approval on that commit.
+*   **Then**: The review opens at once and shows classification progress, or asks first when more than 5,000 changed lines need classifying. A header states how much is hidden. Before submitting, a confirmation names the commit and the hidden line count. GitHub records the approval on that commit.
 
 ### CUJ 4: Comment and request changes on a PR
 
 *   **Given**: The reviewer finds a problem in a HOT section.
-*   **When**: The reviewer clicks the line, writes a comment and presses Request changes.
-*   **Then**: Comments and the verdict reach GitHub as one review on the commit the reviewer saw. If GitHub refuses it, the review states why and keeps the draft.
+*   **When**: The reviewer clicks the line, writes a comment and presses Enter. Later the reviewer writes a summary and presses Request changes.
+*   **Then**: The comment reaches GitHub at once as a single line comment on the commit the reviewer saw. The verdict and the summary are a separate review. If GitHub refuses the comment, the review states why, keeps it on its line as `Not posted` and offers `Post`.
 
 ### CUJ 5: Take part in a discussion on a PR
 
 *   **Given**: A line already has a discussion from another person.
 *   **When**: The reviewer presses `Reply`, writes an answer and later presses `Resolve`.
-*   **Then**: The reply appears under the earlier comments. A resolved discussion shrinks to one line, and `Unresolve` reopens it. The reviewer can edit their own comments, and emptying one deletes it.
+*   **Then**: The reply appears under the earlier comments. A resolved discussion shrinks to one line, and `Unresolve` reopens it. The reviewer can edit their own comments, and `Delete` removes one after a confirmation. Emptying a comment in `Edit` asks for the same confirmation.
 
 ### CUJ 6: Reject a PR
 
@@ -309,21 +309,25 @@ Every action is `gh api` with an argument list and no shell. The body goes throu
 
 | Action | Call | When it is sent |
 | --- | --- | --- |
-| Comment, Approve, Request changes | `POST pulls/<n>/reviews` with `commit_id`, `event`, `body` and `comments` (`path`, `line`, `side`, optional `start_line`, `start_side`, `body`) | On confirmation, as one review |
+| Line comment | `POST pulls/<n>/comments` with `commit_id`, `path`, `line`, `side` and `body` | When written |
+| Comment, Approve, Request changes | `POST pulls/<n>/reviews` with `commit_id`, `event` and `body`. GitHub requires `body` for Comment and Request changes, so those two buttons appear only once a summary exists | On confirmation |
 | Reply | GraphQL `addPullRequestReviewThreadReply` | When written |
-| Edit, delete a posted comment | GraphQL `updatePullRequestReviewComment`, `deletePullRequestReviewComment` | When written |
+| Edit a posted comment | GraphQL `updatePullRequestReviewComment` | When written |
+| Delete a posted comment | GraphQL `deletePullRequestReviewComment` | On confirmation |
 | Resolve, reopen | GraphQL `resolveReviewThread`, `unresolveReviewThread` | When pressed |
-| Reject | `PATCH pulls/<n>` with `state: closed`, after any drafts are sent as a `COMMENT` review | On confirmation |
+| Reject | `PATCH pulls/<n>` with `state: closed`, after any summary is sent as a `COMMENT` review | On confirmation |
 
-New comments are local drafts until a verdict is submitted, and they can be edited freely. Replies and changes to posted comments go out at once, because they belong to a discussion that already exists.
+Line comments, replies and changes to posted comments all go out at once. A line comment is saved locally before it is sent, so a refusal does not lose it. It stays on its line as `Not posted`, with `Post` and `Edit`.
+
+**Notifications.** Every outcome is a toast, because toasts float over the transcript wherever the review is scrolled. Successes stay 4 seconds. Refusals and verdict results stay 10 seconds. While something is on its way, the band above the prompt says so. A failed reply or edit keeps its text in the field, so Enter tries again. Lasting states, such as a full store or a stopped classification, stay in the review header.
 
 **Approve conditions.** Approve is disabled while classification is running or waiting to resume. Otherwise it is available, and unread sections do not block it, because the reviewer decides what to read. The confirmation names the commit, the sections read and the lines hidden.
 
 **Text on the approval.** The mod adds no text. On GitHub it is a normal approval, and nothing states that only HOT lines were read (owner's decision).
 
-**Head check.** Before every verdict, the mod re-reads the PR's head commit. If it differs from the commit on screen, the mod blocks the submission and reloads the diff, as CUJ 8 describes. After a verdict it reads the head again, and if the head moved in that moment it says the verdict applies to the older commit. GitHub's documentation warns only that an old `commit_id` can make comments outdated, so the check belongs to the mod.
+**Head check.** Before every line comment and every verdict, the mod re-reads the PR's head commit. If it differs from the commit on screen, the mod blocks the submission and reloads the diff, as CUJ 8 describes. After a verdict it reads the head again, and if the head moved in that moment it says the verdict applies to the older commit. GitHub's documentation warns only that an old `commit_id` can make comments outdated, so the check belongs to the mod.
 
-**Refusals.** If GitHub refuses a call, the review shows the error and keeps the drafts.
+**Refusals.** If GitHub refuses a call, a toast shows the error and the review keeps the comment or the summary.
 
 ### Safety rules
 
@@ -353,7 +357,7 @@ Not tested yet:
 2.  **Large diffs:** whether GitHub answers 406, and at what size. The documentation lists the 406 with no explanation.
 3.  **Risk rule:** whether the same snippet gets stable scores across runs, and whether a threshold of 6 shows the right lines on the owner's first real reviews.
 
-Known limit: classification starts as soon as the review opens, with no confirmation. With a named branch or a PR URL, a very large diff can use the whole budget of 3,000,000 input tokens.
+Above 5,000 changed lines still to classify, the review names the diff and asks before any model call, with `Classify` and `Cancel`. Lines with a stored verdict and lockfiles or whitespace-only hunks that score zero by rule do not count. A diff at or below the limit starts at once, and the budget of 3,000,000 input tokens still applies.
 
 ### Interface (tested with a mock)
 
@@ -513,7 +517,7 @@ Each step ends with the verification plan below passing. A prototype runs before
 #### 4. `types/index.d.ts` (Create)
 
 *   **Type / Scope**: Type contract for `$.state`.
-*   **Proposed Changes**: The types below, and `PluginState['easy-review']` with `rowId`, `review`, `page`, `selected`, `composer`, `threads`, `expanded`, `pending` and `outcome`.
+*   **Proposed Changes**: The types below, and `PluginState['easy-review']` with `rowId`, `review`, `page`, `selected`, `composer`, `threads`, `expanded`, `pending` and `delivery`.
 
 ```text
 DiffLine   { key, kind: add|del|ctx, oldNo?, newNo?, text }
@@ -554,7 +558,7 @@ Thread     { id, path, side, line, isResolved, isOutdated, comments, canResolve 
 #### 10. `hooks/github-actions.ts` (Create)
 
 *   **Type / Scope**: Output for PR review.
-*   **Proposed Changes**: One function per row of the GitHub actions table, each calling `gh api` with an argument list and the body on standard input. `submitReview` runs the head check, sends the review, then reads the head again. `reject` sends drafts as a `COMMENT` review, then closes the PR. Every function returns success or GitHub's error text. None of them removes drafts on failure.
+*   **Proposed Changes**: One function per row of the GitHub actions table, each calling `gh api` with an argument list and the body on standard input. `postLineComment` sends one comment after the head check. `submitReview` runs the head check, sends the review, then reads the head again. `reject` sends any summary as a `COMMENT` review, then closes the PR. Every function returns success or GitHub's error text. None of them removes a comment or a summary on failure.
 
 #### 11. `hooks/review-store.ts` (Create)
 
@@ -638,9 +642,10 @@ Thread     { id, path, side, line, isResolved, isOutdated, comments, canResolve 
     *   Approve is disabled while classification runs.
     *   In PR review, no hook sees `prompt.submit` or `session.append`.
     *   Local send calls `prompt.submit` once, with `path:line`, the line and the words.
-    *   A moved head blocks the verdict and keeps the drafts.
-    *   A GitHub error keeps the drafts and shows the text.
-    *   Reject sends drafts before closing.
+    *   A line comment goes out at once as a single comment, with no review around it.
+    *   A moved head blocks the comment and the verdict, and keeps the comment.
+    *   A GitHub error keeps the comment on its line and shows the text.
+    *   Reject sends the summary before closing.
     *   A second `/easy-review` restores drafts and read state.
     *   Outside fullscreen, the command stops with its message.
 

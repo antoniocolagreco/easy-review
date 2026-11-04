@@ -12,7 +12,7 @@ const selected = atom({ plugin: 'easy-review', key: 'selected' } as const, null)
 const composer = atom({ plugin: 'easy-review', key: 'composer' } as const, null)
 const expanded = atom({ plugin: 'easy-review', key: 'expanded' } as const, [])
 const pending = atom({ plugin: 'easy-review', key: 'pending' } as const, null)
-const outcome = atom({ plugin: 'easy-review', key: 'outcome' } as const, null)
+const delivery = atom({ plugin: 'easy-review', key: 'delivery' } as const, null)
 
 const PLUGIN = 'easy-review'
 const LAYOUT_WAIT_MS = 100
@@ -63,7 +63,7 @@ export const register: Register = on => {
     await update($, composer, () => null)
     await update($, expanded, () => [])
     await update($, pending, () => null)
-    await update($, outcome, () => null)
+    await update($, delivery, () => null)
 
     const placed = await $.ui.place({ id })
 
@@ -90,6 +90,7 @@ export const register: Register = on => {
     if (typeof data === 'object' && data !== null && 'lineKey' in data && typeof data.lineKey === 'string') {
       const lineKey = data.lineKey
 
+      await update($, delivery, now => (now?.kind === 'kept' ? null : now))
       await update($, composer, () => null)
       await update($, selected, now => (now === lineKey ? null : lineKey))
     }
@@ -98,7 +99,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const hasWork = (await read($, selected)) !== null || (await read($, composer)) !== null
+    const hasWork = (await read($, selected)) !== null || (await read($, composer)) !== null || (await read($, delivery)) !== null
 
     if (!hasWork || e.props.hasSurvey || e.surface === 'mobile' || e.surface === 'vscode' || currentSession() === null) {
       return next(e)

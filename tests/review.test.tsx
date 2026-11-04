@@ -19,6 +19,8 @@ type TestOn = Parameters<Body>[1]
 const USAGE = { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
 const LOCAL_ID = 'review-1'
+declare const setTimeout: (run: (value?: unknown) => void, ms: number) => unknown
+
 const PR_URL = 'https://github.com/acme/app/pull/7'
 
 const ROW = {
@@ -51,6 +53,11 @@ type World = {
   runFails?: string
   numstat?: string
   submitted?: string[]
+  posted?: string[]
+  threadsAfterPost?: string
+  toasts?: string[]
+  graphql?: string[]
+  postGate?: Promise<void>
   closed?: string[]
   promptTexts?: string[]
   modelCalls?: { count: number }
@@ -66,7 +73,16 @@ const engineWorld = (on: TestOn, world: World) => {
   on('command.register', () => ({ value: { command: 'easy-review' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('clock.now', () => ({ value: 1 }))
-  on('clock.sleep', () => ({ value: undefined }))
+  on('clock.sleep', async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    return { value: undefined }
+  })
+  on('ui.toast', (_, e) => {
+    world.toasts?.push(e.text)
+
+    return { value: undefined }
+  })
   on('ui.place', () => ({ value: { isPlaced: true, requestId: LOCAL_ID } }))
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -133,7 +149,7 @@ const engineWorld = (on: TestOn, world: World) => {
     } else if (line.includes('Accept: application/vnd.github.diff')) {
       stdout = SERVICE_DIFF
     } else if (line.startsWith('gh api graphql')) {
-      stdout = THREADS_JSON
+      stdout = (world.posted?.length ?? 0) > 0 ? (world.threadsAfterPost ?? THREADS_JSON) : THREADS_JSON
     } else if (line === 'gh api repos/acme/app/pulls/7') {
       stdout = heads.length > 0 ? (heads.shift() ?? PR_JSON) : PR_JSON
     } else {
@@ -146,8 +162,45 @@ const engineWorld = (on: TestOn, world: World) => {
 
     return { value: { code, signal: null } }
   })
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     const line = e.argv.join(' ')
+
+    if (line.includes('/pulls/7/comments')) {
+      await world.postGate
+    }
+
+    if (line.includes('graphql')) {
+      world.graphql?.push(e.init?.stdin ?? '')
+    }
+
+    const threadAnswer = (isResolved: boolean) =>
+      JSON.stringify({
+        thread: { isResolved, viewerCanReply: true, viewerCanResolve: !isResolved, viewerCanUnresolve: isResolved },
+      })
+
+    if (world.runFails === undefined && e.init?.stdin?.includes('unresolveReviewThread') === true) {
+      return {
+        value: {
+          exitCode: 0,
+          stdout: `{"data":{"unresolveReviewThread":${threadAnswer(false)}}}`,
+          stderr: '',
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    }
+
+    if (world.runFails === undefined && e.init?.stdin?.includes('resolveReviewThread') === true) {
+      return {
+        value: {
+          exitCode: 0,
+          stdout: `{"data":{"resolveReviewThread":${threadAnswer(true)}}}`,
+          stderr: '',
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
+    }
 
     if (world.runFails !== undefined) {
       return { value: { exitCode: 1, stdout: '', stderr: world.runFails, isStdoutTruncated: false, isStderrTruncated: false } }
@@ -155,6 +208,8 @@ const engineWorld = (on: TestOn, world: World) => {
 
     if (line.includes('/reviews')) {
       world.submitted?.push(e.init?.stdin ?? '')
+    } else if (line.includes('/pulls/7/comments')) {
+      world.posted?.push(e.init?.stdin ?? '')
     } else if (line.includes('PATCH')) {
       world.closed?.push(e.init?.stdin ?? '')
     }
@@ -520,9 +575,10 @@ test('in PR review nothing reaches the session model', async ($, on) => {
 
 test('approve asks for confirmation and sends the commit on screen', async ($, on) => {
   const submitted: string[] = []
+  const toasts: string[] = []
 
   mock.store(on)
-  engineWorld(on, { submitted })
+  engineWorld(on, { submitted, toasts })
   await start($, PR_URL)
 
   const ui = await $.ui.mount(ROW)
@@ -537,15 +593,17 @@ test('approve asks for confirmation and sends the commit on screen', async ($, o
   expect(body['event']).toBe('APPROVE')
   expect(body['commit_id']).toBe('abc1234abc1234abc1234abc1234abc1234abc12')
   expect(body['body']).toBe('')
-  expect(await ui.find({ type: 'Text', text: /Approve sent on commit abc1234/ })).toBeDefined()
+  expect(toasts.filter(one => /Approve sent on commit abc1234/.test(one)).length).toBe(1)
   await ui.unmount()
 })
 
-test('a comment and request changes reach GitHub as one review on the right side and line', async ($, on) => {
+test('a line comment goes out at once as a single comment, with no review around it', async ($, on) => {
   const submitted: string[] = []
+  const posted: string[] = []
+  const threadsAfterPost = THREADS_JSON.replaceAll('thread-1', 'thread-9').replace(/"body":"[^"]*"/, '"body":"Not enough"')
 
   mock.store(on)
-  engineWorld(on, { submitted })
+  engineWorld(on, { submitted, posted, threadsAfterPost })
   await start($, PR_URL)
 
   const ui = await $.ui.mount(ROW)
@@ -554,24 +612,107 @@ test('a comment and request changes reach GitHub as one review on the right side
 
   await ui.pointer({ in: key, type: 'down', x: 2, y: 0, button: 'left' })
   await band.input({ key: 'comment-field', text: 'Not enough', kind: 'submit' })
-  await ui.press({ key: 'review-changes' })
-  await ui.press({ key: 'confirm' })
 
-  const body = JSON.parse(submitted[0] ?? '{}') as { event: string; body: string; comments: unknown[] }
-
-  expect(body.event).toBe('REQUEST_CHANGES')
-  expect(body.body).toBe('See the line comments.')
-  expect(body.comments).toEqual([{ path: 'src/service.ts', line: 12, side: 'RIGHT', body: 'Not enough' }])
-  expect(await ui.find({ type: 'Text', text: /Draft: Not enough/ })).toBeUndefined()
+  expect(posted.map(one => JSON.parse(one) as unknown)).toEqual([
+    {
+      commit_id: 'abc1234abc1234abc1234abc1234abc1234abc12',
+      path: 'src/service.ts',
+      line: 12,
+      side: 'RIGHT',
+      body: 'Not enough',
+    },
+  ])
+  expect(submitted.length).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /Not posted/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /: Not enough/ })).toBeDefined()
   await band.unmount()
   await ui.unmount()
 })
 
-test('a moved head blocks the verdict and keeps the drafts', async ($, on) => {
+test('the band says a comment is being posted, then a toast gives the outcome', async ($, on) => {
+  const toasts: string[] = []
+  let release = () => {}
+  const postGate = new Promise<void>(resolve => {
+    release = resolve
+  })
+
+  mock.store(on)
+  engineWorld(on, { toasts, postGate })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+  const key = await clientKeyOf(ui)
+
+  await ui.pointer({ in: key, type: 'down', x: 2, y: 0, button: 'left' })
+
+  const sent = band.input({ key: 'comment-field', text: 'Not enough', kind: 'submit' })
+
+  const posting = /Posting your comment on src\/service\.ts:12/
+
+  for (let tries = 0; tries < 50 && (await band.find({ type: 'Text', text: posting })) === undefined; tries += 1) {
+    await Promise.resolve()
+  }
+
+  expect(await band.find({ type: 'Text', text: posting })).toBeDefined()
+  expect(toasts).toEqual([])
+  release()
+  await sent
+  expect(await band.find({ type: 'Text', text: /Posting your comment/ })).toBeUndefined()
+  expect(toasts).toEqual(['Comment posted on src/service.ts:12.'])
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('a refused reply keeps its text in the field and shows the reason', async ($, on) => {
+  const toasts: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { toasts, runFails: 'gh: Unprocessable Entity (HTTP 422)' })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+
+  await ui.press({ key: 'reply-thread-0' })
+  await band.input({ key: 'reply-0', text: 'Fine', kind: 'submit' })
+  expect(toasts.filter(one => /GitHub refused the reply.*HTTP 422/.test(one)).length).toBe(1)
+  expect(JSON.stringify(await band.find({ type: 'Input' }))).toContain('Fine')
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('comment and request changes need a summary, and send only the summary', async ($, on) => {
   const submitted: string[] = []
 
   mock.store(on)
-  engineWorld(on, { submitted, head: [PR_JSON, PR_MOVED_JSON, PR_MOVED_JSON] })
+  engineWorld(on, { submitted })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+
+  expect(await ui.find({ type: 'Text', text: /Comment and Request changes need a summary/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'review-changes' })).toBeUndefined()
+  await ui.press({ key: 'review-body' })
+  await band.input({ key: 'review-body', text: 'Not ready', kind: 'submit' })
+  await ui.press({ key: 'review-changes' })
+  await ui.press({ key: 'confirm' })
+  expect(JSON.parse(submitted[0] ?? '{}')).toEqual({
+    commit_id: 'abc1234abc1234abc1234abc1234abc1234abc12',
+    event: 'REQUEST_CHANGES',
+    body: 'Not ready',
+  })
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('a moved head blocks the comment and keeps it', async ($, on) => {
+  const posted: string[] = []
+  const toasts: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { posted, toasts, head: [PR_JSON, PR_MOVED_JSON, PR_MOVED_JSON] })
   await start($, PR_URL)
 
   const ui = await $.ui.mount(ROW)
@@ -580,18 +721,45 @@ test('a moved head blocks the verdict and keeps the drafts', async ($, on) => {
 
   await ui.pointer({ in: key, type: 'down', x: 2, y: 0, button: 'left' })
   await band.input({ key: 'comment-field', text: 'Stay', kind: 'submit' })
+  expect(posted.length).toBe(0)
+
+  expect(toasts.filter(one => /The PR moved to commit def5678, so the comment was not posted/.test(one)).length).toBe(1)
+
+  const kept = /Not posted: Stay/
+
+  for (let tries = 0; tries < 200 && (await ui.find({ type: 'Text', text: kept })) === undefined; tries += 1) {
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+
+  expect(await ui.find({ type: 'Text', text: kept })).toBeDefined()
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('a moved head blocks the verdict', async ($, on) => {
+  const submitted: string[] = []
+  const toasts: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { submitted, toasts, head: [PR_JSON, PR_MOVED_JSON, PR_MOVED_JSON] })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+
   await ui.press({ key: 'review-approve' })
   await ui.press({ key: 'confirm' })
   expect(submitted.length).toBe(0)
-  expect(await ui.find({ type: 'Text', text: /The PR moved to commit def5678, so nothing was sent/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Draft: Stay/ })).toBeDefined()
-  await band.unmount()
+  expect(toasts.filter(one => /The PR moved to commit def5678, so nothing was sent/.test(one)).length).toBe(1)
   await ui.unmount()
 })
 
-test('a GitHub error keeps the drafts and shows the text', async ($, on) => {
+test('a GitHub error keeps the comment on its line, and Post sends it again', async ($, on) => {
+  const posted: string[] = []
+  const toasts: string[] = []
+  const world: World = { posted, toasts, runFails: 'gh: Unprocessable Entity (HTTP 422)' }
+
   mock.store(on)
-  engineWorld(on, { runFails: 'gh: Unprocessable Entity (HTTP 422)' })
+  engineWorld(on, world)
   await start($, PR_URL)
 
   const ui = await $.ui.mount(ROW)
@@ -600,35 +768,65 @@ test('a GitHub error keeps the drafts and shows the text', async ($, on) => {
 
   await ui.pointer({ in: key, type: 'down', x: 2, y: 0, button: 'left' })
   await band.input({ key: 'comment-field', text: 'Stay', kind: 'submit' })
-  await ui.press({ key: 'review-changes' })
-  await ui.press({ key: 'confirm' })
-  expect(await ui.find({ type: 'Text', text: /GitHub refused the review.*HTTP 422/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Draft: Stay/ })).toBeDefined()
+  expect(toasts.filter(one => /GitHub refused the comment.*HTTP 422/.test(one)).length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Not posted: Stay/ })).toBeDefined()
+
+  delete world.runFails
+  await ui.press({ key: 'post-draft-0' })
+  expect(posted.length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Not posted: Stay/ })).toBeUndefined()
+  expect(toasts).toContain('Comment posted on src/service.ts:12.')
   await band.unmount()
   await ui.unmount()
 })
 
-test('reject asks for confirmation, sends drafts first, then closes the PR', async ($, on) => {
-  const submitted: string[] = []
-  const closed: string[] = []
+test('a GitHub error on a verdict keeps the summary and shows the text', async ($, on) => {
+  const toasts: string[] = []
+  const world: World = { toasts }
 
   mock.store(on)
-  engineWorld(on, { submitted, closed })
+  engineWorld(on, world)
   await start($, PR_URL)
 
   const ui = await $.ui.mount(ROW)
   const band = await $.ui.mount(BAND)
-  const key = await clientKeyOf(ui)
 
-  await ui.pointer({ in: key, type: 'down', x: 2, y: 0, button: 'left' })
-  await band.input({ key: 'comment-field', text: 'No', kind: 'submit' })
+  await ui.press({ key: 'review-body' })
+  await band.input({ key: 'review-body', text: 'Not ready', kind: 'submit' })
+  world.runFails = 'gh: Unprocessable Entity (HTTP 422)'
+  await ui.press({ key: 'review-changes' })
+  await ui.press({ key: 'confirm' })
+  expect(toasts.filter(one => /GitHub refused the review.*HTTP 422/.test(one)).length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Summary: Not ready/ })).toBeDefined()
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('reject asks for confirmation, sends the summary first, then closes the PR', async ($, on) => {
+  const submitted: string[] = []
+  const closed: string[] = []
+  const toasts: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { submitted, closed, toasts })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+
+  await ui.press({ key: 'review-body' })
+  await band.input({ key: 'review-body', text: 'No', kind: 'submit' })
   await ui.press({ key: 'review-reject' })
   expect(await ui.find({ type: 'Text', text: /Close PR #7 without merging it\?/ })).toBeDefined()
   expect(closed.length).toBe(0)
   await ui.press({ key: 'confirm' })
-  expect((JSON.parse(submitted[0] ?? '{}') as { event: string }).event).toBe('COMMENT')
+  expect(JSON.parse(submitted[0] ?? '{}')).toEqual({
+    commit_id: 'abc1234abc1234abc1234abc1234abc1234abc12',
+    event: 'COMMENT',
+    body: 'No',
+  })
   expect(JSON.parse(closed[0] ?? '{}')).toEqual({ state: 'closed' })
-  expect(await ui.find({ type: 'Text', text: /PR #7 is closed/ })).toBeDefined()
+  expect(toasts).toContain('PR #7 is closed.')
   await band.unmount()
   await ui.unmount()
 })
@@ -648,6 +846,221 @@ test('a reply and a resolve go out at once', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Resolved \(2 comments\)/ })).toBeDefined()
   await band.unmount()
   await ui.unmount()
+})
+
+test('delete asks for confirmation, removes the comment from GitHub and says so', async ($, on) => {
+  const toasts: string[] = []
+  const graphql: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { toasts, graphql })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+
+  expect(await ui.find({ type: 'Button', key: 'delete-comment-0-0' })).toBeUndefined()
+  await ui.press({ key: 'reply-thread-0' })
+  await band.input({ key: 'reply-0', text: 'Fine', kind: 'submit' })
+  await ui.press({ key: 'delete-comment-0-1' })
+  expect(await band.find({ type: 'Text', text: /Delete your comment on src\/service\.ts:12\?/ })).toBeDefined()
+  expect(graphql.some(one => one.includes('deletePullRequestReviewComment'))).toBe(false)
+
+  await band.press({ key: 'delete-cancel' })
+  expect(await ui.find({ type: 'Text', text: /antonio: Fine/ })).toBeDefined()
+
+  await ui.press({ key: 'delete-comment-0-1' })
+  await band.press({ key: 'delete-confirm' })
+  expect(graphql.filter(one => one.includes('deletePullRequestReviewComment') && one.includes('"id":"c2"')).length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /antonio: Fine/ })).toBeUndefined()
+  expect(toasts).toContain('Comment deleted on src/service.ts:12.')
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('a refused delete keeps the comment and shows the reason', async ($, on) => {
+  const toasts: string[] = []
+  const world: World = { toasts }
+
+  mock.store(on)
+  engineWorld(on, world)
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+
+  await ui.press({ key: 'reply-thread-0' })
+  await band.input({ key: 'reply-0', text: 'Fine', kind: 'submit' })
+  world.runFails = 'gh: Forbidden (HTTP 403)'
+  await ui.press({ key: 'delete-comment-0-1' })
+  await band.press({ key: 'delete-confirm' })
+  expect(toasts.filter(one => /GitHub refused to delete the comment.*HTTP 403/.test(one)).length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /antonio: Fine/ })).toBeDefined()
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('emptying a posted comment in Edit asks before deleting', async ($, on) => {
+  const graphql: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { graphql })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+
+  await ui.press({ key: 'reply-thread-0' })
+  await band.input({ key: 'reply-0', text: 'Fine', kind: 'submit' })
+  await ui.press({ key: 'edit-comment-0-1' })
+  await band.input({ key: 'comment-edit-0-1', text: '', kind: 'submit' })
+  expect(await band.find({ type: 'Text', text: /Delete your comment on src\/service\.ts:12\?/ })).toBeDefined()
+  expect(graphql.some(one => one.includes('deletePullRequestReviewComment'))).toBe(false)
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('Delete removes an unposted comment from its line, with nothing sent', async ($, on) => {
+  const graphql: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { graphql, runFails: 'gh: Unprocessable Entity (HTTP 422)' })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+  const key = await clientKeyOf(ui)
+
+  await ui.pointer({ in: key, type: 'down', x: 2, y: 0, button: 'left' })
+  await band.input({ key: 'comment-field', text: 'Stay', kind: 'submit' })
+  expect(await ui.find({ type: 'Text', text: /Not posted: Stay/ })).toBeDefined()
+  await ui.press({ key: 'delete-draft-0' })
+  expect(await ui.find({ type: 'Text', text: /Not posted: Stay/ })).toBeUndefined()
+  expect(graphql.length).toBe(0)
+  await band.unmount()
+  await ui.unmount()
+})
+
+test('a refused resolve reaches a toast, and a resolve says so', async ($, on) => {
+  const toasts: string[] = []
+  const world: World = { toasts, runFails: 'gh: Forbidden (HTTP 403)' }
+
+  mock.store(on)
+  engineWorld(on, world)
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+
+  await ui.press({ key: 'resolve-thread-0' })
+  expect(toasts.filter(one => /GitHub refused the change.*HTTP 403/.test(one)).length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /Resolved \(/ })).toBeUndefined()
+
+  delete world.runFails
+  await ui.press({ key: 'resolve-thread-0' })
+  expect(toasts).toContain('Discussion resolved.')
+  expect(await ui.find({ type: 'Text', text: /Resolved \(1 comment\)/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('after Resolve the button is Unresolve at once, and after Unresolve it is Resolve again', async ($, on) => {
+  mock.store(on)
+  engineWorld(on, {})
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+
+  await ui.press({ key: 'resolve-thread-0' })
+  expect(await ui.find({ type: 'Button', key: 'unresolve-thread-0' })).toBeDefined()
+
+  await ui.press({ key: 'unresolve-thread-0' })
+  expect(await ui.find({ type: 'Button', key: 'resolve-thread-0' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'unresolve-thread-0' })).toBeUndefined()
+
+  await ui.press({ key: 'resolve-thread-0' })
+  expect(await ui.find({ type: 'Button', key: 'unresolve-thread-0' })).toBeDefined()
+  await ui.unmount()
+})
+
+const addedLines = (count: number): string =>
+  [
+    'diff --git a/src/big.ts b/src/big.ts',
+    'index 1111111..2222222 100644',
+    '--- a/src/big.ts',
+    '+++ b/src/big.ts',
+    `@@ -0,0 +1,${count} @@`,
+    ...Array.from({ length: count }, (_, index) => `+line ${index + 1}`),
+    '',
+  ].join('\n')
+
+test('above 5,000 lines to classify the review asks first, and Classify starts it', async ($, on) => {
+  const modelCalls = { count: 0 }
+
+  mock.store(on)
+  engineWorld(on, { modelCalls, slowModel: true, diff: addedLines(5001), numstat: '5001\t0\tsrc/big.ts\n' })
+  await start($)
+
+  const ui = await $.ui.mount(ROW)
+
+  expect(await ui.find({ type: 'Text', text: /5,001 changed lines need classifying/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /up to 3,000,000 input tokens/ })).toBeDefined()
+  expect(JSON.stringify(await ui.drawn())).not.toContain('line 1')
+  expect(modelCalls.count).toBe(0)
+  await ui.press({ key: 'classify-confirm' })
+  expect(modelCalls.count).toBeGreaterThan(0)
+  expect(await ui.find({ type: 'Button', key: 'classify-confirm' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Cancel stops the review with no model call', async ($, on) => {
+  const modelCalls = { count: 0 }
+
+  mock.store(on)
+  engineWorld(on, { modelCalls, diff: addedLines(5001), numstat: '5001\t0\tsrc/big.ts\n' })
+  await start($)
+
+  const ui = await $.ui.mount(ROW)
+
+  await ui.press({ key: 'classify-cancel' })
+  expect(await ui.find({ type: 'Text', text: /no tokens were used/ })).toBeDefined()
+  expect(modelCalls.count).toBe(0)
+  await ui.unmount()
+})
+
+test('exactly 5,000 lines to classify do not ask', async ($, on) => {
+  const modelCalls = { count: 0 }
+
+  mock.store(on)
+  engineWorld(on, { modelCalls, slowModel: true, diff: addedLines(5000), numstat: '5000\t0\tsrc/big.ts\n' })
+  await start($)
+
+  const ui = await $.ui.mount(ROW)
+
+  expect(await ui.find({ type: 'Button', key: 'classify-confirm' })).toBeUndefined()
+  expect(modelCalls.count).toBeGreaterThan(0)
+  await ui.unmount()
+})
+
+test('lines with a stored verdict do not count toward the confirmation', async ($, on) => {
+  const modelCalls = { count: 0 }
+
+  mock.store(on)
+  engineWorld(on, { modelCalls, slowModel: true, diff: addedLines(5001), numstat: '5001\t0\tsrc/big.ts\n' })
+  await start($)
+
+  const first = await $.ui.mount(ROW)
+
+  await first.press({ key: 'classify-confirm' })
+  await first.unmount()
+
+  const callsAfterFirst = modelCalls.count
+
+  await start($)
+
+  const second = await $.ui.mount(ROW)
+
+  expect(await second.find({ type: 'Button', key: 'classify-confirm' })).toBeUndefined()
+  expect(modelCalls.count).toBe(callsAfterFirst)
+  await second.unmount()
 })
 
 test('More context adds lines from the file around a section', async ($, on) => {

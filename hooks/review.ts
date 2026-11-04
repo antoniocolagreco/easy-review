@@ -13,11 +13,12 @@ import type {
   StoredReview,
   Thread,
 } from '../types'
-import { buildPieces, resumeQueue, runQueue, TOKEN_BUDGET } from './classifier-queue'
+import { buildPieces, CONFIRM_LINES, resumeQueue, runQueue, TOKEN_BUDGET } from './classifier-queue'
 import type { Queue } from './classifier-queue'
 import {
   closePr,
   deleteComment,
+  postLineComment,
   replyToThread,
   setThreadResolved,
   submitReview,
@@ -41,7 +42,8 @@ export type ReviewTarget = { kind: 'local'; base?: string } | { kind: 'pr'; ref:
 
 export type Session = {
   target: ReviewTarget
-  status: 'loading' | 'ready' | 'error'
+  status: 'loading' | 'confirm' | 'ready' | 'error'
+  linesToClassify: number
   message: string
   id: string
   top: string
@@ -65,6 +67,7 @@ export type Session = {
   cachedNotes: Map<string, Notes>
   orphanDrafts: number[]
   orphanThreads: number[]
+  isPosting: boolean
 }
 
 export type Notes = { drafts: number[]; threads: number[] }
@@ -91,6 +94,7 @@ const newSession = (target: ReviewTarget, stored: StoredReview = emptyReview()):
   return {
     target,
     status: 'loading',
+    linesToClassify: 0,
     message: '',
     id: '',
     top: '',
@@ -114,6 +118,7 @@ const newSession = (target: ReviewTarget, stored: StoredReview = emptyReview()):
     cachedNotes: new Map(),
     orphanDrafts: [],
     orphanThreads: [],
+    isPosting: false,
   }
 }
 
@@ -246,9 +251,37 @@ export async function openReview($: EngineInterface, target: ReviewTarget): Prom
     redraw: () => redraw($),
   }
 
+  const linesToClassify = pieces
+    .filter(piece => piece.state === 'pending')
+    .reduce((total, piece) => total + piece.lines.filter(line => line.kind !== 'ctx').length, 0)
+
   current.queue = queue
+
+  if (linesToClassify > CONFIRM_LINES) {
+    current.status = 'confirm'
+    current.linesToClassify = linesToClassify
+    await redraw($)
+
+    return
+  }
+
   current.status = 'ready'
   await runQueue($, queue)
+}
+
+export async function confirmClassification($: EngineInterface): Promise<void> {
+  if (session?.status === 'confirm' && session.queue !== null) {
+    session.status = 'ready'
+    await runQueue($, session.queue)
+  }
+}
+
+export async function cancelClassification($: EngineInterface): Promise<void> {
+  if (session?.status === 'confirm') {
+    session.status = 'error'
+    session.message = 'you cancelled it before classification, so no tokens were used.'
+    await redraw($)
+  }
 }
 
 const STORE_FULL = 'The review store is full. Drafts and verdicts are kept only until Claude Code closes.'
@@ -467,9 +500,68 @@ export async function saveDraft($: EngineInterface, location: LineLocation, text
 
   current.stored = { ...current.stored, drafts: [...current.stored.drafts, draft] }
   await persist($, current)
+
+  if (current.target.kind === 'pr') {
+    return postDraft($, current.stored.drafts.length - 1)
+  }
+
   await redraw($)
 
   return null
+}
+
+export async function postDraft($: EngineInterface, index: number): Promise<string | null> {
+  const current = session
+  const draft = current?.stored.drafts[index]
+
+  if (current === null || draft === undefined || current.target.kind !== 'pr') {
+    return 'The comment could not be found.'
+  }
+
+  if (current.isPosting) {
+    return 'Another comment is being posted. This one is kept on its line.'
+  }
+
+  const ref = current.target.ref
+
+  current.isPosting = true
+  await redraw($)
+
+  try {
+    const head = await readHead($, ref)
+
+    if (head === null) {
+      return 'Could not read the PR head, so the comment was not posted. It is kept on its line.'
+    }
+
+    if (head !== current.commit) {
+      void openReview($, { kind: 'pr', ref })
+
+      return `The PR moved to commit ${head.slice(0, 7)}, so the comment was not posted. It is kept, and the diff is being reloaded.`
+    }
+
+    const posted = await postLineComment($, ref, current.commit, draft)
+
+    if (!posted.isDone) {
+      return `GitHub refused the comment. It is kept on its line: ${posted.error}`
+    }
+
+    current.stored = { ...current.stored, drafts: current.stored.drafts.filter(one => one !== draft) }
+    await persist($, current)
+
+    const threads = await readThreads($, ref)
+
+    if (!Array.isArray(threads)) {
+      return `The comment is on GitHub, but the discussions could not be read again: ${threads.error}`
+    }
+
+    current.threads = threads
+
+    return null
+  } finally {
+    current.isPosting = false
+    await redraw($)
+  }
 }
 
 export async function editDraft($: EngineInterface, index: number, text: string): Promise<void> {
@@ -568,27 +660,24 @@ export async function submitVerdict($: EngineInterface, action: ReviewAction): P
   const head = await readHead($, ref)
 
   if (head === null) {
-    return 'Could not read the PR head, so nothing was sent. Drafts are kept.'
+    return 'Could not read the PR head, so nothing was sent.'
   }
 
   if (head !== current.commit) {
     void openReview($, { kind: 'pr', ref })
 
-    return `The PR moved to commit ${head.slice(0, 7)}, so nothing was sent. The diff is being reloaded. Drafts and read sections are kept.`
+    return `The PR moved to commit ${head.slice(0, 7)}, so nothing was sent. The diff is being reloaded. The summary and read sections are kept.`
   }
 
-  const drafts = current.stored.drafts.filter(draft => !draft.hasMoved)
-  const hasNote = drafts.length > 0 || current.stored.body !== ''
-
   if (action === 'Reject') {
-    if (hasNote) {
-      const noted = await submitReview($, ref, current.commit, 'COMMENT', current.stored.body, drafts)
+    if (current.stored.body !== '') {
+      const noted = await submitReview($, ref, current.commit, 'COMMENT', current.stored.body)
 
       if (!noted.isDone) {
-        return `GitHub refused the comments, so the PR stays open: ${noted.error}`
+        return `GitHub refused the summary, so the PR stays open: ${noted.error}`
       }
 
-      current.stored = { ...current.stored, drafts: current.stored.drafts.filter(draft => draft.hasMoved), body: '' }
+      current.stored = { ...current.stored, body: '' }
       await persist($, current)
     }
 
@@ -610,13 +699,13 @@ export async function submitVerdict($: EngineInterface, action: ReviewAction): P
     return `PR #${ref.number} is closed.`
   }
 
-  const sent = await submitReview($, ref, current.commit, eventOf[action], current.stored.body, drafts)
+  const sent = await submitReview($, ref, current.commit, eventOf[action], current.stored.body)
 
   if (!sent.isDone) {
-    return `GitHub refused the review. Drafts are kept: ${sent.error}`
+    return `GitHub refused the review. The summary is kept: ${sent.error}`
   }
 
-  current.stored = { ...current.stored, drafts: current.stored.drafts.filter(draft => draft.hasMoved), body: '' }
+  current.stored = { ...current.stored, body: '' }
   await persist($, current)
   await refreshThreads($, current, ref)
   await redraw($)
@@ -713,7 +802,7 @@ export async function resolveThread($: EngineInterface, index: number, isResolve
     return `GitHub refused the change: ${result.error}`
   }
 
-  current.threads = current.threads.map((one, at) => (at === index ? { ...one, isResolved } : one))
+  current.threads = current.threads.map((one, at) => (at === index ? { ...one, ...result.data } : one))
   await redraw($)
 
   return null
