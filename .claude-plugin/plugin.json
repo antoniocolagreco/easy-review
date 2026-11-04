@@ -1,6 +1,6 @@
 {
   "name": "easy-review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Review only the high-risk lines of a diff, for the local branch or a GitHub pull request.",
   "author": { "name": "Antonio Colagreco" },
   "types": "./types/index.d.ts"
