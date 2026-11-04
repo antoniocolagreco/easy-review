@@ -31,6 +31,7 @@ export type ViewInput = {
   extra: ReadonlyMap<string, ExtraLines>
   noteSize: (lineKey: string) => number
   discussions: (lineKey: string) => number
+  isClassifying?: boolean
 }
 
 export type View = {
@@ -52,6 +53,7 @@ type Run = {
   status?: string
   isPromoted: boolean
   symbol?: string
+  isWaiting?: boolean
 }
 
 const changedCount = (lines: readonly DiffLine[]): number => lines.filter(line => line.kind !== 'ctx').length
@@ -99,6 +101,7 @@ const runsOfPiece = (piece: Piece, file: DiffFile, isFileHigh: boolean, promoted
         summary: '',
         status: statusOf(piece),
         isPromoted: false,
+        isWaiting: piece.state === 'pending' || piece.state === 'running',
       },
     ]
   }
@@ -217,10 +220,12 @@ const lineBlocks = (
 
 export const buildView = (input: ViewInput): View => {
   const { files, pieces, read, promoted, expanded, extra, noteSize, discussions } = input
+  const isHeld = (run: Run): boolean => input.isClassifying === true && run.isWaiting === true
   const counts: Counts = {
     changed: 0,
     hot: 0,
     notClassified: 0,
+    waiting: 0,
     hiddenLines: 0,
     hiddenRuns: 0,
     sections: 0,
@@ -311,10 +316,16 @@ export const buildView = (input: ViewInput): View => {
     return found
   }
 
-  for (const { file, runs } of perFile) {
-    const fileChanged = runs.reduce((total, run) => total + changedCount(run.lines), 0)
+  for (const { file, runs: allRuns } of perFile) {
+    const fileChanged = allRuns.reduce((total, run) => total + changedCount(run.lines), 0)
+    const runs = allRuns.filter(run => !isHeld(run))
 
     counts.changed += fileChanged
+    counts.waiting += allRuns.filter(isHeld).reduce((total, run) => total + changedCount(run.lines), 0)
+
+    if (allRuns.length > 0 && runs.length === 0) {
+      continue
+    }
 
     if (file.hunks.length === 0 && !isFixedZeroRename(file)) {
       const sectionId = `file:${file.path}:${file.status}`

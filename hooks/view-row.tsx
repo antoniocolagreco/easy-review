@@ -64,7 +64,7 @@ const confirmText = (current: Session, action: ReviewAction, hiddenLines: number
   return `${action} on commit ${commit}? You read ${read} of ${total} sections, and ${formatCount(hiddenLines)} changed lines are hidden.${movedNote}`
 }
 
-export async function renderRow($: EngineInterface, elements: Elements, rowKey: string): Promise<RenderElement> {
+export async function renderRow($: EngineInterface, elements: Elements, rowKey: string, screenRows: number): Promise<RenderElement> {
   const { Box, Button, Client, Text } = elements
   const current = currentSession()
   const activeRow = await read($, rowId)
@@ -76,7 +76,11 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
   await read($, revision)
 
   if (current.status === 'loading') {
-    return <Text dimColor>easy-review: reading the diff...</Text>
+    return (
+      <Box flexDirection="column" minHeight={screenRows}>
+        <Text dimColor>easy-review: reading the diff...</Text>
+      </Box>
+    )
   }
 
   if (current.status === 'error') {
@@ -330,7 +334,7 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
     counts.hot === 0 && counts.notClassified === 0 && view.isComplete && current.countProblems.length === 0 && !isClassifying
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" minHeight={isClassifying ? screenRows : 0}>
       <Box flexDirection="column" borderStyle="round" paddingX={1}>
         {current.pr === null ? (
           <Box flexDirection="column">
@@ -364,7 +368,7 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
         </Text>
         {isClassifying && (
           <Text color="yellow">
-            Classifying: {finished} of {totalPieces} pieces done.
+            Classifying: {finished} of {totalPieces} pieces done, {formatCount(counts.waiting)} lines waiting.
           </Text>
         )}
         {stopped > 0 && !isClassifying && (

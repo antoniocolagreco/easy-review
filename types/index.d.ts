@@ -129,6 +129,7 @@ export type Counts = {
   changed: number
   hot: number
   notClassified: number
+  waiting: number
   hiddenLines: number
   hiddenRuns: number
   sections: number

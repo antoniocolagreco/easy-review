@@ -22,7 +22,21 @@ const stripFence = (text: string): string => {
 
 const clean = (value: string, limit: number): string => sanitizeText(value).trim().slice(0, limit)
 
-export const parseReply = (text: string, lineCount: number): ReplyResult => {
+export const parseReply = (
+  text: string,
+  lineCount: number,
+  isBlank: (lineNumber: number) => boolean = () => false,
+): ReplyResult => {
+  const isBlankRange = (from: number, to: number): boolean => {
+    for (let line = from; line <= to; line += 1) {
+      if (!isBlank(line)) {
+        return false
+      }
+    }
+
+    return true
+  }
+
   let parsed: unknown
 
   try {
@@ -50,7 +64,9 @@ export const parseReply = (text: string, lineCount: number): ReplyResult => {
       return invalid('a snippet has no valid line range')
     }
 
-    if (from !== expected || to < from || to > lineCount) {
+    const coversGap = from > expected && isBlankRange(expected, from - 1)
+
+    if ((from !== expected && !coversGap) || to < from || to > lineCount) {
       return invalid(`snippets do not cover line ${expected} once, in order`)
     }
 
@@ -73,7 +89,7 @@ export const parseReply = (text: string, lineCount: number): ReplyResult => {
     }
 
     snippets.push({
-      from,
+      from: expected,
       to,
       title,
       impact,
@@ -85,8 +101,14 @@ export const parseReply = (text: string, lineCount: number): ReplyResult => {
     expected = to + 1
   }
 
+  const last = snippets.at(-1)
+
   if (expected !== lineCount + 1) {
-    return invalid(`snippets stop before line ${lineCount}`)
+    if (last === undefined || !isBlankRange(expected, lineCount)) {
+      return invalid(`snippets stop before line ${lineCount}`)
+    }
+
+    last.to = lineCount
   }
 
   return { isValid: true, snippets }

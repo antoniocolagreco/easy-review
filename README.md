@@ -10,14 +10,15 @@ A Claude Code mod that shows only the high-risk lines of a diff, so a person rea
 
 ## Needs
 
-*   Claude Code in the terminal, in fullscreen: `CLAUDE_CODE_NO_FLICKER=1`.
+*   Claude Code in the terminal, in the fullscreen layout. It is on by default. In tmux, or if `CLAUDE_CODE_NO_FLICKER=0` is set, start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`.
+*   A mouse: clicks are the only way to comment and to press the buttons. In tmux, also add `set -g mouse on` to `~/.tmux.conf`. This has not been tried with a physical mouse.
 *   `git`, and `gh` logged in for PR review. The review shows which `gh` account it uses.
 
 ## Load it
 
 ```sh
 git clone https://github.com/antoniocolagreco/easy-review.git
-CLAUDE_CODE_NO_FLICKER=1 claude --plugin-dir ./easy-review
+claude --plugin-dir ./easy-review
 ```
 
 ## How to use it

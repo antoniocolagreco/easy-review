@@ -173,6 +173,18 @@ test('an invalid reply is refused whole', () => {
   expect(parseReply(one({ impact: 3, reversibility: 3, detection: 3 }), 2).isValid).toBe(false)
 })
 
+test('a gap of blank lines joins the next snippet or the last one', () => {
+  const base = { title: 'Other', impact: 0, reversibility: 0, detection: 0, summary: 'A value' }
+  const blankAt = (lines: readonly number[]) => (line: number) => lines.includes(line)
+  const middle = parseReply(JSON.stringify({ snippets: [{ ...base, from: 1, to: 19 }, { ...base, from: 21, to: 30 }] }), 30, blankAt([20]))
+  const end = parseReply(JSON.stringify({ snippets: [{ ...base, from: 1, to: 2 }] }), 3, blankAt([3]))
+  const notBlank = parseReply(JSON.stringify({ snippets: [{ ...base, from: 1, to: 19 }, { ...base, from: 21, to: 30 }] }), 30, blankAt([]))
+
+  expect(middle.isValid && middle.snippets.map(one => [one.from, one.to])).toEqual([[1, 19], [20, 30]])
+  expect(end.isValid && end.snippets.map(one => [one.from, one.to])).toEqual([[1, 3]])
+  expect(notBlank.isValid).toBe(false)
+})
+
 test('a reply with a gap or an overlap is refused', () => {
   const base = { title: 'Other', impact: 0, reversibility: 0, detection: 0, summary: 'A value' }
 
@@ -180,7 +192,7 @@ test('a reply with a gap or an overlap is refused', () => {
   expect(parseReply(JSON.stringify({ snippets: [{ ...base, from: 1, to: 2 }, { ...base, from: 2, to: 3 }] }), 3).isValid).toBe(false)
 })
 
-const viewOf = (diff: string, state: Piece['state'], reply?: string) => {
+const viewOf = (diff: string, state: Piece['state'], reply?: string, isClassifying = false) => {
   const parsed = parseDiff(diff)
   const pieces: Piece[] = parsed.files.flatMap(file =>
     file.hunks.map(hunk => {
@@ -208,8 +220,20 @@ const viewOf = (diff: string, state: Piece['state'], reply?: string) => {
     extra: new Map(),
     noteSize: () => 0,
     discussions: () => 0,
+    isClassifying,
   })
 }
+
+test('lines waiting for classification are not drawn while it runs', () => {
+  const running = viewOf(SERVICE_DIFF, 'pending', undefined, true)
+  const stopped = viewOf(SERVICE_DIFF, 'pending', undefined, false)
+
+  expect(running.blocks.length).toBe(0)
+  expect(running.counts.waiting).toBe(7)
+  expect(running.counts.notClassified).toBe(0)
+  expect(stopped.counts.notClassified).toBe(7)
+  expect(stopped.blocks.filter(block => block.kind === 'heading').length).toBe(1)
+})
 
 test('only high-risk snippets become sections', () => {
   const view = viewOf(SERVICE_DIFF, 'scored', SERVICE_REPLY)
@@ -218,6 +242,7 @@ test('only high-risk snippets become sections', () => {
     changed: 7,
     hot: 4,
     notClassified: 0,
+    waiting: 0,
     hiddenLines: 3,
     hiddenRuns: 2,
     sections: 1,

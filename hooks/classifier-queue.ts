@@ -80,7 +80,7 @@ async function classifyPiece($: EngineInterface, queue: Queue, piece: Piece): Pr
         {
           model: MODEL,
           system: [{ text: SYSTEM_PROMPT, cache: true }],
-          prompt,
+          prompt: attempt === 0 ? prompt : `${prompt}\nYour previous reply was refused: ${piece.failure ?? 'it was not valid'}.`,
           maxTokens: MAX_TOKENS,
           timeoutMs: TIMEOUT_MS,
         },
@@ -91,7 +91,7 @@ async function classifyPiece($: EngineInterface, queue: Queue, piece: Piece): Pr
         reply.usage.input_tokens + reply.usage.cache_read_input_tokens + reply.usage.cache_creation_input_tokens
 
       if (reply.isAnswered) {
-        const parsed = parseReply(reply.text, piece.lines.length)
+        const parsed = parseReply(reply.text, piece.lines.length, line => piece.lines[line - 1]?.text.trim() === '')
 
         if (parsed.isValid) {
           piece.state = 'scored'

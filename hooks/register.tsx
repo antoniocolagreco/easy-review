@@ -15,11 +15,13 @@ const pending = atom({ plugin: 'easy-review', key: 'pending' } as const, null)
 const outcome = atom({ plugin: 'easy-review', key: 'outcome' } as const, null)
 
 const PLUGIN = 'easy-review'
+const LAYOUT_WAIT_MS = 100
 
 const USAGE =
   'Usage: /easy-review reviews uncommitted changes. /easy-review <branch> reviews the current branch against that branch. /easy-review <PR URL> reviews https://github.com/<owner>/<repo>/pull/<number>.'
 const BRANCH_NAME = /^[A-Za-z0-9_][\w./-]*$/
-const NOT_FULLSCREEN = 'easy-review needs fullscreen. Start Claude Code with CLAUDE_CODE_NO_FLICKER=1 and run it again.'
+const NOT_FULLSCREEN =
+  'easy-review needs the fullscreen layout, which is off in tmux and with CLAUDE_CODE_NO_FLICKER=0. Start Claude Code with CLAUDE_CODE_NO_FLICKER=1 and run it again.'
 const NOT_TERMINAL = 'easy-review runs only in the terminal.'
 
 let surface: string | null = null
@@ -71,6 +73,14 @@ export const register: Register = on => {
 
     void openReview($, ref !== null ? { kind: 'pr', ref } : { kind: 'local', ...(base === undefined ? {} : { base }) })
 
+    await $.clock.sleep(LAYOUT_WAIT_MS)
+
+    const moved = await $.ui.scroll({ to: { requestId: placed.requestId }, block: 'start' }).catch((error: unknown) => ({ deny: String(error) }))
+
+    if (moved.deny !== undefined) {
+      $.ui.log(`easy-review: the view did not move to the review: ${moved.deny}`, { to: 'debug' })
+    }
+
     return { text: 'easy-review opened.' }
   })
 
@@ -104,6 +114,6 @@ export const register: Register = on => {
       return next(e)
     }
 
-    return renderRow($, $.ui.resolve(e), e.props.id)
+    return renderRow($, $.ui.resolve(e), e.props.id, e.viewport?.rows ?? 0)
   })
 }

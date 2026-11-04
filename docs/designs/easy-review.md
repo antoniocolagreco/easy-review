@@ -136,7 +136,7 @@ The proposed solution computes a risk score for each snippet of changed code and
  (comments to Claude)       (review on GitHub)
 ```
 
-The mod runs only in the terminal with Claude Code in fullscreen. On any other surface, or outside fullscreen, `/easy-review` stops and says why, because the mouse is documented only in fullscreen and a compaction outside fullscreen ends the row.
+The mod runs only in the terminal with Claude Code in fullscreen, which is on by default except in tmux or with `CLAUDE_CODE_NO_FLICKER=0`. On any other surface, or outside fullscreen, `/easy-review` stops and says why, because the mouse is documented only in fullscreen and a compaction outside fullscreen ends the row.
 
 ### Reading the diff
 
@@ -266,7 +266,7 @@ Hunks that no fixed zero-risk rule covers go to `$.model.complete`, which has no
 ] }
 ```
 
-**Validation.** The snippets must cover every line once, in order. `title` must come from the list, and each score must be a whole number from 0 to 3. `description` is required when the computed risk is 6 or more. Text fields have a length limit and lose control characters. Anything else, including a reply cut at the token limit, leaves the whole piece not classified, and it is shown. An `api-error`, `empty-reply` or invalid reply is retried once.
+**Validation.** The snippets must cover every line once, in order. A gap made only of blank lines joins the neighbouring snippet, because the model often skips them and refusing the reply put a whole piece back on screen. `title` must come from the list, and each score must be a whole number from 0 to 3. `description` is required when the computed risk is 6 or more. Text fields have a length limit and lose control characters. Anything else, including a reply cut at the token limit, leaves the whole piece not classified, and it is shown. An `api-error`, `empty-reply` or invalid reply is retried once.
 
 **Limits.** The model is `sonnet`. It is a starting choice, not a measured one. Each call has `maxTokens` 8000 and `timeoutMs` 120000, and at most 4 calls run at once. The rules are sent as a cached block.
 
@@ -278,7 +278,7 @@ Hunks that no fixed zero-risk rule covers go to `$.model.complete`, which has no
 
 ### Sections and hidden code
 
-A section is one run of HOT or not classified lines, with up to 3 lines of context. COLD runs around it are drawn as one clickable line with their title and summary. A file with no HOT lines goes to the hidden list at the end of the review.
+While classification runs, lines still waiting are counted in the header and not drawn, so the code on screen is only what is already known to be HOT. Once it stops, any line with no valid verdict is drawn and marked as not classified. A section is one run of HOT or not classified lines, with up to 3 lines of context. COLD runs around it are drawn as one clickable line with their title and summary. A file with no HOT lines goes to the hidden list at the end of the review.
 
 *   **Related hidden changes.** After classification, the mod looks for names defined in hidden runs (`function X`, `const X =`, `class X`, `def X`) that also appear in a HOT section. Each match is listed under that section as a collapsed line. This is a text match and will miss some cases.
 *   **More context.** Each section has `More context`, which adds 20 lines around it, read from the file (local) or from `repos/<o>/<r>/contents/<path>?ref=<sha>` (PR). GitHub comments apply only to lines in the diff, so these added lines cannot take a comment in PR review.
@@ -359,7 +359,7 @@ Known limit: classification starts as soon as the review opens, with no confirma
 
 The mock has fake data and sends nothing to GitHub. It sits outside the project, in `~/.claude/dev-mods/094812cb-7558-404f-ae7b-d7ed355b4239/easy-review-mock`. It was tried in a real terminal, partly with simulated mouse events and partly by the owner.
 
-*   **Where the review sits:** a row in the chat, placed with `$.ui.place`. It takes the chat's full width and scrolls with the mouse wheel. The owner preferred this to a side pane, which is limited to 45% of the terminal's columns. New chat messages appear below the row, so the review scrolls up while Claude works.
+*   **Where the review sits:** a row in the chat, placed with `$.ui.place`. It takes the chat's full width and scrolls with the mouse wheel. On opening, the view moves to the start of the row with `$.ui.scroll`, 100 ms after placing it. While the diff loads and classification runs, the row is at least one screen tall, because otherwise the view stays on the bottom and follows the row as it grows. The test kit refuses this scroll, so it was checked only in a real terminal. The owner preferred this to a side pane, which is limited to 45% of the terminal's columns. New chat messages appear below the row, so the review scrolls up while Claude works.
 *   **The diff:** Claude Code's own `Code` element with `format: 'diff'`, so it looks like the diffs Claude Code shows natively, with syntax colors. The mod cannot change these colors.
 *   **Clicks on a line:** `Code` cannot be pressed, so each run of lines sits in a `Client`, which receives mouse events and maps the row to the line. This needs each line on one row, so long lines are cut with `wrap: 'truncate-end'`.
 *   **Hover:** the line under the mouse is redrawn as plain text on a blue background. While hovered it loses its syntax colors and its diff background. A selected line looks the same and also has a `>` in the left column.

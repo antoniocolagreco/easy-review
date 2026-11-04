@@ -66,6 +66,7 @@ const engineWorld = (on: TestOn, world: World) => {
   on('command.register', () => ({ value: { command: 'easy-review' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('clock.now', () => ({ value: 1 }))
+  on('clock.sleep', () => ({ value: undefined }))
   on('ui.place', () => ({ value: { isPlaced: true, requestId: LOCAL_ID } }))
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -468,7 +469,7 @@ test('outside fullscreen the command stops with its message', async ($, on) => {
 
   const result = await start($, '', false)
 
-  expect(result.text).toContain('needs fullscreen')
+  expect(result.text).toContain('needs the fullscreen layout')
 })
 
 test('a wrong argument prints the usage', async ($, on) => {

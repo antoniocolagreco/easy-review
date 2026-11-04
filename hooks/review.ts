@@ -248,7 +248,6 @@ export async function openReview($: EngineInterface, target: ReviewTarget): Prom
 
   current.queue = queue
   current.status = 'ready'
-  await redraw($)
   await runQueue($, queue)
 }
 
@@ -363,6 +362,7 @@ export const drawnView = (current: Session, expanded: readonly string[]): DrawnV
     extra: current.extra,
     noteSize,
     discussions: lineKey => notes.get(lineKey)?.threads.length ?? 0,
+    isClassifying: (current.queue?.running ?? 0) > 0,
   })
   const pages = paginate(view.blocks)
 
