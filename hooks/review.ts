@@ -37,7 +37,7 @@ const revision = atom({ plugin: 'easy-review', key: 'revision' } as const, 0)
 
 const CONTEXT_STEP = 20
 
-export type ReviewTarget = { kind: 'local' } | { kind: 'pr'; ref: PrRef }
+export type ReviewTarget = { kind: 'local'; base?: string } | { kind: 'pr'; ref: PrRef }
 
 export type Session = {
   target: ReviewTarget
@@ -46,6 +46,7 @@ export type Session = {
   id: string
   top: string
   branch: string
+  baseName: string | null
   commit: string
   pr: PrInfo | null
   login: string
@@ -94,6 +95,7 @@ const newSession = (target: ReviewTarget, stored: StoredReview = emptyReview()):
     id: '',
     top: '',
     branch: '',
+    baseName: null,
     commit: '',
     pr: null,
     login: '',
@@ -149,7 +151,7 @@ const reviewId = (target: ReviewTarget, top: string, branch: string): string =>
 
 async function loadSource($: EngineInterface, current: Session): Promise<string | null> {
   if (current.target.kind === 'local') {
-    const local = await readLocal($)
+    const local = await readLocal($, current.target.base)
 
     if (!local.isRead) {
       return local.message
@@ -157,6 +159,7 @@ async function loadSource($: EngineInterface, current: Session): Promise<string 
 
     current.top = local.source.top
     current.branch = local.source.branch
+    current.baseName = local.source.baseName
     current.commit = local.source.commit
     current.id = reviewId(current.target, current.top, current.branch)
     current.diff = parseDiff(local.source.diffText)

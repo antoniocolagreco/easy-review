@@ -12,7 +12,7 @@ easy-review is a Claude Code mod for reviewing code written by LLMs. It shows on
 
 It has two modes, chosen by how it is started:
 
-*   **Local review:** `/easy-review` with no argument. It reviews the current branch, and the reviewer's comments go to Claude, who corrects the code. Nothing reaches GitHub.
+*   **Local review:** `/easy-review` with no argument reviews only uncommitted changes. `/easy-review <branch>` reviews the current branch against the named branch. The mod never chooses a branch on its own. In both, the reviewer's comments go to Claude, who corrects the code, and nothing reaches GitHub.
 *   **Pull request review:** `/easy-review <PR URL>`. It reviews a pull request on GitHub, and the reviewer can comment, reply to discussions, approve, request changes or reject without opening GitHub.
 
 The mod is used after the strongest available model has reviewed the code and reported no problems. The mod does not run or check that review.
@@ -61,7 +61,7 @@ The proposed solution computes a risk score for each snippet of changed code and
 
 *   **Given**: The reviewer has worked on a feature with Claude, and the strongest model has reported no problems.
 *   **When**: The reviewer runs `/easy-review`, comments on some lines and presses `Send to Claude`.
-*   **Then**: The diff runs from the point where the branch left the main branch to the current files, including uncommitted and new files. A line at the top says that nothing reaches GitHub. Claude receives each comment with `file:line`, the text of the commented line and the reviewer's words, then corrects the code and replies in the chat.
+*   **Then**: With no argument, the diff covers only uncommitted changes and new files. With `/easy-review <branch>`, it runs from the point where the current branch left the named branch to the current files, including uncommitted and new files. A line at the top says that nothing reaches GitHub. Claude receives each comment with `file:line`, the text of the commented line and the reviewer's words, then corrects the code and replies in the chat.
 
 ### CUJ 2: Review a local branch again after corrections
 
@@ -142,9 +142,9 @@ The mod runs only in the terminal with Claude Code in fullscreen. On any other s
 
 Both sources use `$.process.spawn`, because `$.process.run` cuts output at 4 MiB. The mod sets no limit of its own on diff size.
 
-**Local source.** The mod finds the main branch from `refs/remotes/origin/HEAD`, then `main`, then `master`. If none exists, it stops and says so. It then runs:
+**Local source.** The base is never guessed (owner's decision). A guessed base failed on a real repository: a local `main` left months behind `develop` compared one branch against 4,086 files. With no argument the base is `HEAD`, so only uncommitted changes and new files are reviewed. `/easy-review <branch>` uses the named branch, and a name that does not exist stops the review before any model call. The header states which of the two applies. It then runs:
 
-*   `git merge-base HEAD <main>` for the starting point.
+*   `git merge-base HEAD <branch>` for the starting point, when a branch is named.
 *   `git diff --no-color --no-ext-diff --no-textconv -M <base>` for commits and uncommitted changes.
 *   `git ls-files --others --exclude-standard -z` for new files, then `git diff --no-index /dev/null <file>` for each one. The mod never runs `git add`, so the index does not change.
 *   `git diff --numstat -z <base>` for the count check.
@@ -345,12 +345,15 @@ Tested in a real terminal on a scratch local repository, with the real model and
 4.  **Classifier cost:** 56,471 tokens for 1,514 changed lines in 8 pieces, almost all of it generated code. This is one sample and well below the brief's estimate.
 5.  **Local review, whole loop:** comment, `Send to Claude`, Claude corrects the file, and a second `/easy-review` reuses stored verdicts.
 6.  **PR reading:** login, PR fields, diff header and the GraphQL discussions query, on a real public PR.
+7.  **Local commands:** `/easy-review` on a clean repository says there is nothing to review and makes no model call, and with a new file it reviews only that file. `/easy-review main` reviews the branch against `main`. A branch that does not exist stops the review.
 
 Not tested yet:
 
 1.  **GitHub writes on a scratch repository:** every action in the table, comments on a line outside the diff, and approving your own PR. From memory, GitHub refuses the last two. These calls have run only against stand-ins, and the mutation names and input fields were read from the GraphQL schema.
 2.  **Large diffs:** whether GitHub answers 406, and at what size. The documentation lists the 406 with no explanation.
 3.  **Risk rule:** whether the same snippet gets stable scores across runs, and whether a threshold of 6 shows the right lines on the owner's first real reviews.
+
+Known limit: classification starts as soon as the review opens, with no confirmation. With a named branch or a PR URL, a very large diff can use the whole budget of 3,000,000 input tokens.
 
 ### Interface (tested with a mock)
 
@@ -536,7 +539,7 @@ Thread     { id, path, side, line, isResolved, isOutdated, comments, canResolve 
 #### 7. `hooks/source-local.ts` (Create)
 
 *   **Type / Scope**: Data access.
-*   **Proposed Changes**: Finds the main branch and runs the git commands listed in the Technical Plan through `$.process.spawn`, joining the pieces. New files are added to the same diff text. Exit code 1 from `git diff --no-index` counts as success. Returns the diff text, the counts from `--numstat`, the branch and the head commit. Stops with a message outside a repository or with no main branch.
+*   **Proposed Changes**: Takes the named branch, if any, and runs the git commands listed in the Technical Plan through `$.process.spawn`, joining the pieces. New files are added to the same diff text. Exit code 1 from `git diff --no-index` counts as success. Returns the diff text, the counts from `--numstat`, the branch, the named base and the head commit. Stops with a message outside a repository or when the named branch does not exist.
 
 #### 8. `hooks/source-pr.ts` (Create)
 

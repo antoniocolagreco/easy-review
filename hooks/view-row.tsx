@@ -335,7 +335,10 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
         {current.pr === null ? (
           <Box flexDirection="column">
             <Text weight="semibold">
-              Local review of {current.branch}, commit {current.commit.slice(0, 7)}
+              {current.baseName === null
+                ? `Local review of uncommitted changes on ${current.branch}`
+                : `Local review of ${current.branch} against ${current.baseName}`}
+              , commit {current.commit.slice(0, 7)}
             </Text>
             <Text color="yellow">Nothing reaches GitHub. Comments go to Claude.</Text>
           </Box>
@@ -388,7 +391,8 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
             {banner}
           </Text>
         ))}
-        {isNoHot && <Text color="green">No HOT sections.</Text>}
+        {isNoHot && view.blocks.length === 0 && <Text color="green">No changes to review.</Text>}
+        {isNoHot && view.blocks.length > 0 && <Text color="green">No HOT sections.</Text>}
       </Box>
       {pager}
       {blocks.map(drawBlock)}

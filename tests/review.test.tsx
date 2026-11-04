@@ -57,6 +57,7 @@ type World = {
   diff?: string
   slowModel?: boolean
   abortNext?: { isOn: boolean }
+  diffLines?: string[]
 }
 
 const engineWorld = (on: TestOn, world: World) => {
@@ -111,10 +112,10 @@ const engineWorld = (on: TestOn, world: World) => {
       stdout = '/repo\n'
     } else if (line.includes('rev-parse HEAD')) {
       stdout = 'abc1234abc1234\n'
-    } else if (line.includes('symbolic-ref')) {
-      stdout = 'origin/main\n'
+    } else if (line.includes('rev-parse --verify')) {
+      code = line.includes('missing') ? 1 : 0
     } else if (line.includes('merge-base')) {
-      stdout = 'base123\n'
+      stdout = line.includes('develop') ? 'develop-base\n' : 'other-base\n'
     } else if (line.includes('--abbrev-ref')) {
       stdout = 'feature\n'
     } else if (line.includes('--numstat')) {
@@ -122,6 +123,7 @@ const engineWorld = (on: TestOn, world: World) => {
     } else if (line.includes('ls-files')) {
       stdout = ''
     } else if (line.startsWith('git') && line.includes(' diff ')) {
+      world.diffLines?.push(line)
       stdout = world.diff ?? SERVICE_DIFF
     } else if (line === 'cat -- src/service.ts') {
       stdout = Array.from({ length: 40 }, (_, index) => `row ${index + 1}`).join('\n')
@@ -199,7 +201,7 @@ test('the local review shows HOT sections, the percentage and the hidden count',
 
   const ui = await $.ui.mount(ROW)
 
-  expect(await ui.find({ type: 'Text', text: /Local review of feature/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Local review of uncommitted changes on feature/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Nothing reaches GitHub/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /4 of 7 changed lines are HOT \(57%\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /3 lines hidden in 2 runs/ })).toBeDefined()
@@ -207,6 +209,69 @@ test('the local review shows HOT sections, the percentage and the hidden count',
   expect(await ui.find({ type: 'Text', text: /Allows only the owner \(generated\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Throws forbidden unless/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /export function suspend/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('with no argument the diff covers only uncommitted changes', async ($, on) => {
+  const diffLines: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { diffLines })
+  await start($)
+
+  const ui = await $.ui.mount(ROW)
+
+  expect(await ui.find({ type: 'Text', text: /Local review of uncommitted changes on feature/ })).toBeDefined()
+  expect(diffLines.length).toBeGreaterThan(0)
+  expect(diffLines.every(line => line.endsWith(' HEAD'))).toBe(true)
+  await ui.unmount()
+})
+
+test('a named branch is the base of the diff', async ($, on) => {
+  const diffLines: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { diffLines })
+  await start($, 'develop')
+
+  const ui = await $.ui.mount(ROW)
+
+  expect(await ui.find({ type: 'Text', text: /Local review of feature against develop/ })).toBeDefined()
+  expect(diffLines.length).toBeGreaterThan(0)
+  expect(diffLines.every(line => line.endsWith('develop-base'))).toBe(true)
+  await ui.unmount()
+})
+
+test('a named branch that does not exist stops the review with no model call', async ($, on) => {
+  const modelCalls = { count: 0 }
+
+  mock.store(on)
+  engineWorld(on, { modelCalls })
+  await start($, 'missing')
+
+  const ui = await $.ui.mount(ROW)
+
+  expect(await ui.find({ type: 'Text', text: /Branch missing was not found/ })).toBeDefined()
+  expect(modelCalls.count).toBe(0)
+  await ui.unmount()
+})
+
+test('an argument that cannot be a branch prints the usage', async ($, on) => {
+  mock.store(on)
+  engineWorld(on, {})
+
+  expect((await start($, '--output=/tmp/x')).text).toContain('Usage')
+  expect((await start($, 'two words')).text).toContain('Usage')
+})
+
+test('a branch with no changes says so', async ($, on) => {
+  mock.store(on)
+  engineWorld(on, { diff: '', numstat: '' })
+  await start($)
+
+  const ui = await $.ui.mount(ROW)
+
+  expect(await ui.find({ type: 'Text', text: /No changes to review/ })).toBeDefined()
   await ui.unmount()
 })
 

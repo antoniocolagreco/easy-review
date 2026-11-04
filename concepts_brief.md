@@ -117,7 +117,7 @@ Reviewers disagreed on these, so they stay open:
 ### Decided by the owner
 
 * The mod will be built and its goal is fixed.
-* `/easy-review` with no argument is a local review of the branch, from the point where it left the main branch to the current files, including uncommitted and new files. Comments go to Claude with one explicit send, as `file:line`, the text of the line and the reviewer's words. Claude replies in the chat. Nothing reaches GitHub.
+* `/easy-review` with no argument is a local review of uncommitted changes and new files only. `/easy-review <branch>` reviews the current branch from the point where it left the named branch. The mod never chooses a branch on its own. Comments go to Claude with one explicit send, as `file:line`, the text of the line and the reviewer's words. Claude replies in the chat. Nothing reaches GitHub.
 * `/easy-review <PR URL>` is a GitHub review. The actions are: read the code, comment, reply, edit own comments, resolve, approve, request changes, reject. Reject closes the PR without merging, because GitHub has no reject action.
 * The review is a row in the chat, not a pane, and uses Claude Code's own diff drawing. A mock tested this: `~/.claude/dev-mods/094812cb-7558-404f-ae7b-d7ed355b4239/easy-review-mock`. `design_draft.md` records what was learned.
 * Approving after reading only HOT sections is accepted.

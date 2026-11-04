@@ -16,7 +16,9 @@ const outcome = atom({ plugin: 'easy-review', key: 'outcome' } as const, null)
 
 const PLUGIN = 'easy-review'
 
-const USAGE = 'Usage: /easy-review reviews the current branch. /easy-review <PR URL> reviews https://github.com/<owner>/<repo>/pull/<number>.'
+const USAGE =
+  'Usage: /easy-review reviews uncommitted changes. /easy-review <branch> reviews the current branch against that branch. /easy-review <PR URL> reviews https://github.com/<owner>/<repo>/pull/<number>.'
+const BRANCH_NAME = /^[A-Za-z0-9_][\w./-]*$/
 const NOT_FULLSCREEN = 'easy-review needs fullscreen. Start Claude Code with CLAUDE_CODE_NO_FLICKER=1 and run it again.'
 const NOT_TERMINAL = 'easy-review runs only in the terminal.'
 
@@ -28,7 +30,7 @@ export const register: Register = on => {
 
     await $.command.register({
       name: 'easy-review',
-      description: 'Review the high-risk lines of the current branch, or of a GitHub PR given by URL.',
+      description: 'Review high-risk lines: uncommitted changes, the current branch against a branch you name, or a GitHub PR by URL.',
     })
 
     return next(e)
@@ -45,8 +47,9 @@ export const register: Register = on => {
 
     const args = e.args.trim()
     const ref = args === '' ? null : parsePrUrl(args)
+    const base = ref === null && BRANCH_NAME.test(args) ? args : undefined
 
-    if (args !== '' && ref === null) {
+    if (args !== '' && ref === null && base === undefined) {
       return { text: USAGE }
     }
 
@@ -66,7 +69,7 @@ export const register: Register = on => {
       return { text: `easy-review could not draw its row: ${placed.reason}` }
     }
 
-    void openReview($, ref === null ? { kind: 'local' } : { kind: 'pr', ref })
+    void openReview($, ref !== null ? { kind: 'pr', ref } : { kind: 'local', ...(base === undefined ? {} : { base }) })
 
     return { text: 'easy-review opened.' }
   })

@@ -7,6 +7,7 @@ import { collect } from './process'
 export type LocalSource = {
   top: string
   branch: string
+  baseName: string | null
   commit: string
   diffText: string
   expected: DiffCounts
@@ -29,25 +30,19 @@ const DIFF_OPTIONS = [
 
 const fail = (message: string): LocalResult => ({ isRead: false, message })
 
-async function findMain($: EngineInterface, top: string): Promise<string | null> {
-  const remote = await collect($, [...GIT, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd: top })
+async function resolveBase($: EngineInterface, top: string, name: string): Promise<{ name: string; commit: string } | string> {
+  const exists = await collect($, [...GIT, 'rev-parse', '--verify', '--quiet', `${name}^{commit}`], { cwd: top })
 
-  if (remote.code === 0 && remote.stdout.trim() !== '') {
-    return remote.stdout.trim()
+  if (exists.code !== 0) {
+    return `Branch ${name} was not found.`
   }
 
-  for (const name of ['main', 'master']) {
-    const found = await collect($, [...GIT, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`], { cwd: top })
+  const merge = await collect($, [...GIT, 'merge-base', 'HEAD', name], { cwd: top })
 
-    if (found.code === 0) {
-      return name
-    }
-  }
-
-  return null
+  return merge.code === 0 ? { name, commit: merge.stdout.trim() } : `This branch has no common commit with ${name}.`
 }
 
-export async function readLocal($: EngineInterface): Promise<LocalResult> {
+export async function readLocal($: EngineInterface, requestedBase?: string): Promise<LocalResult> {
   const topResult = await collect($, [...GIT, 'rev-parse', '--show-toplevel'])
 
   if (topResult.code !== 0) {
@@ -61,19 +56,13 @@ export async function readLocal($: EngineInterface): Promise<LocalResult> {
     return fail('This repository has no commits yet.')
   }
 
-  const main = await findMain($, top)
+  const found = requestedBase === undefined ? null : await resolveBase($, top, requestedBase)
 
-  if (main === null) {
-    return fail('No main branch found: tried origin/HEAD, main and master.')
+  if (typeof found === 'string') {
+    return fail(found)
   }
 
-  const baseResult = await collect($, [...GIT, 'merge-base', 'HEAD', main], { cwd: top })
-
-  if (baseResult.code !== 0) {
-    return fail(`This branch has no common commit with ${main}.`)
-  }
-
-  const base = baseResult.stdout.trim()
+  const base = found?.commit ?? 'HEAD'
   const branchResult = await collect($, [...GIT, 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: top })
   const tracked = await collect($, [...GIT, 'diff', ...DIFF_OPTIONS, base], { cwd: top })
 
@@ -114,6 +103,7 @@ export async function readLocal($: EngineInterface): Promise<LocalResult> {
     source: {
       top,
       branch: branchResult.stdout.trim(),
+      baseName: found?.name ?? null,
       commit: head.stdout.trim(),
       diffText,
       expected,
