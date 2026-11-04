@@ -24,7 +24,7 @@ At the prompt of a Claude Code session in the terminal:
 
 Answer `y` to add the marketplace, then choose a scope.
 
-To update, run this in a shell, then `/reload-plugins` in the session:
+To update, run this in a shell, then restart Claude Code:
 
 ```sh
 claude plugin marketplace update easy-review
