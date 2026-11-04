@@ -1,5 +1,6 @@
 {
   "name": "easy-review",
+  "description": "A Claude Code mod that shows only the high-risk lines of a diff.",
   "owner": { "name": "Antonio Colagreco" },
   "plugins": [{ "name": "easy-review", "source": "./" }]
 }

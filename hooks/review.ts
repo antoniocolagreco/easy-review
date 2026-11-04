@@ -523,6 +523,7 @@ export async function postDraft($: EngineInterface, index: number): Promise<stri
   }
 
   const ref = current.target.ref
+  const place = `${draft.path}:${draft.line}`
 
   current.isPosting = true
   await redraw($)
@@ -531,19 +532,19 @@ export async function postDraft($: EngineInterface, index: number): Promise<stri
     const head = await readHead($, ref)
 
     if (head === null) {
-      return 'Could not read the PR head, so the comment was not posted. It is kept on its line.'
+      return `Could not read the PR head, so the comment was not posted. It is kept on ${place}.`
     }
 
     if (head !== current.commit) {
       void openReview($, { kind: 'pr', ref })
 
-      return `The PR moved to commit ${head.slice(0, 7)}, so the comment was not posted. It is kept, and the diff is being reloaded.`
+      return `The PR moved to commit ${head.slice(0, 7)}, so the comment was not posted. It is kept on ${place}, and the diff is being reloaded.`
     }
 
     const posted = await postLineComment($, ref, current.commit, draft)
 
     if (!posted.isDone) {
-      return `GitHub refused the comment. It is kept on its line: ${posted.error}`
+      return `GitHub refused the comment. It is kept on ${place}: ${posted.error}`
     }
 
     current.stored = { ...current.stored, drafts: current.stored.drafts.filter(one => one !== draft) }

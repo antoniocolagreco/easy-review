@@ -133,6 +133,17 @@ export async function renderBand($: EngineInterface, elements: Elements): Promis
   const { locations } = drawnView(current, open)
   const location = picked === null ? undefined : locations.get(picked)
 
+  if (mode === null && location?.isExtra === true && current.target.kind === 'pr') {
+    return (
+      <Box flexDirection="column" borderStyle="round" paddingX={1}>
+        <Text>GitHub takes comments only on lines in the diff, and this line came from More context.</Text>
+        <Button key="extra-close" onPress={close}>
+          Close
+        </Button>
+      </Box>
+    )
+  }
+
   const save = async (text: string) => {
     const isEmpty = text.trim() === ''
 

@@ -142,7 +142,7 @@ const engineWorld = (on: TestOn, world: World) => {
     } else if (line.startsWith('git') && line.includes(' diff ')) {
       world.diffLines?.push(line)
       stdout = world.diff ?? SERVICE_DIFF
-    } else if (line === 'cat -- src/service.ts') {
+    } else if (line === 'cat -- src/service.ts' || line.includes('contents/src/service.ts')) {
       stdout = Array.from({ length: 40 }, (_, index) => `row ${index + 1}`).join('\n')
     } else if (line === 'gh api user') {
       stdout = JSON.stringify({ login: 'antonio' })
@@ -723,7 +723,7 @@ test('a moved head blocks the comment and keeps it', async ($, on) => {
   await band.input({ key: 'comment-field', text: 'Stay', kind: 'submit' })
   expect(posted.length).toBe(0)
 
-  expect(toasts.filter(one => /The PR moved to commit def5678, so the comment was not posted/.test(one)).length).toBe(1)
+  expect(toasts.filter(one => /The PR moved to commit def5678, so the comment was not posted\. It is kept on src\/service\.ts:12/.test(one)).length).toBe(1)
 
   const kept = /Not posted: Stay/
 
@@ -732,6 +732,7 @@ test('a moved head blocks the comment and keeps it', async ($, on) => {
   }
 
   expect(await ui.find({ type: 'Text', text: kept })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 comment not posted: src\/service\.ts:12/ })).toBeDefined()
   await band.unmount()
   await ui.unmount()
 })
@@ -775,6 +776,7 @@ test('a GitHub error keeps the comment on its line, and Post sends it again', as
   await ui.press({ key: 'post-draft-0' })
   expect(posted.length).toBe(1)
   expect(await ui.find({ type: 'Text', text: /Not posted: Stay/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /not posted:/ })).toBeUndefined()
   expect(toasts).toContain('Comment posted on src/service.ts:12.')
   await band.unmount()
   await ui.unmount()
@@ -1061,6 +1063,31 @@ test('lines with a stored verdict do not count toward the confirmation', async (
   expect(await second.find({ type: 'Button', key: 'classify-confirm' })).toBeUndefined()
   expect(modelCalls.count).toBe(callsAfterFirst)
   await second.unmount()
+})
+
+test('on a PR, a line from More context says it cannot take a comment before any typing', async ($, on) => {
+  const posted: string[] = []
+
+  mock.store(on)
+  engineWorld(on, { posted })
+  await start($, PR_URL)
+
+  const ui = await $.ui.mount(ROW)
+  const band = await $.ui.mount(BAND)
+  const more = (await ui.findAll({ type: 'Button' })).map(one => one.key).find(one => one?.startsWith('more-') === true)
+
+  await ui.press({ key: more ?? '' })
+
+  const before = (await ui.findAll({ type: 'Client' })).map(one => one.key ?? '').find(one => one.startsWith('diff-before-')) ?? ''
+
+  await ui.pointer({ in: before, type: 'down', x: 2, y: 0, button: 'left' })
+  expect(await band.find({ type: 'Text', text: /GitHub takes comments only on lines in the diff/ })).toBeDefined()
+  expect(await band.find({ type: 'Input' })).toBeUndefined()
+  await band.press({ key: 'extra-close' })
+  expect(await band.find({ type: 'Text', text: /GitHub takes comments only/ })).toBeUndefined()
+  expect(posted).toEqual([])
+  await band.unmount()
+  await ui.unmount()
 })
 
 test('More context adds lines from the file around a section', async ($, on) => {

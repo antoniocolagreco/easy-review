@@ -474,6 +474,11 @@ export async function renderRow($: EngineInterface, elements: Elements, rowKey: 
             </Button>
           </Box>
         )}
+        {isPr && !current.isPosting && drafts.length > 0 && (
+          <Text color="yellow">
+            {commentCount(drafts.length)} not posted: {drafts.map(draft => `${draft.path}:${draft.line}`).join(', ')}
+          </Text>
+        )}
         {current.countProblems.length > 0 && (
           <Text color="red">The diff read does not match the expected counts: {current.countProblems.join(', ')}</Text>
         )}
